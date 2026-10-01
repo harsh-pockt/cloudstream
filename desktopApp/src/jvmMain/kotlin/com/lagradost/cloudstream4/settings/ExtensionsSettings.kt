@@ -179,7 +179,12 @@ class RepositoryScreen(private val url: String) : SearchableSettings {
                 listOfNotNull(
                     Preference.PreferenceGroup(
                         title = "Available on desktop · ${desktop.size}",
-                        preferenceItems = desktop.map { plugin ->
+                        preferenceItems = if (desktop.isEmpty()) listOf(
+                            Preference.PreferenceItem.InfoPreference(
+                                "Nothing in this repository runs on desktop yet. All ${androidOnly.size} of its " +
+                                        "extensions are Android only, see below."
+                            )
+                        ) else desktop.map { plugin ->
                             val installedVersion = installed.firstOrNull { it.internalName == plugin.internalName }?.version
                             Preference.PreferenceItem.TextPreference(
                                 title = plugin.name,
