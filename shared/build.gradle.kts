@@ -51,6 +51,12 @@ kotlin {
 
         jvmMain.dependencies {
             implementation(libs.ktor.client.java)
+            implementation(libs.kotlinx.serialization.json)
+        }
+
+        jvmTest.dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }
