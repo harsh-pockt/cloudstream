@@ -35,17 +35,25 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "CloudStream"
-            packageVersion = "1.0.0"
+            // MSI requires MAJOR.MINOR.BUILD with numbers only, which versionName already is
+            packageVersion = libs.versions.versionName.get()
 
-            val iconsRoot = project.file("desktop-icons")
+            // The packaged runtime only contains these JDK modules, regenerate with ./gradlew :desktopApp:suggestRuntimeModules
+            modules("java.instrument", "java.management", "java.net.http", "java.sql", "jdk.dynalink", "jdk.unsupported")
+
+            val iconsRoot = project.file("src/desktop-icons")
             macOS {
                 // iconFile.set(iconsRoot.resolve("icon-mac.icns"))
             }
             windows {
                 iconFile.set(iconsRoot.resolve("icon-windows.ico"))
-                // menuGroup = "Compose Examples"
+                menu = true
+                menuGroup = "CloudStream"
+                shortcut = true
+                dirChooser = true
+                // Must never change, otherwise new versions install side by side instead of upgrading
                 // see https://wixtoolset.org/documentation/manual/v3/howtos/general/generate_guids.html
-                // upgradeUuid = ""
+                upgradeUuid = "33b76f91-08d2-41b1-9ed1-ddde419f24be"
             }
             linux {
                 iconFile.set(iconsRoot.resolve("icon-linux.png"))
