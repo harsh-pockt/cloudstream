@@ -32,8 +32,8 @@ jobs:
         cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
         cache-read-only: ${{ github.event_name == 'pull_request' }}
 
-    - name: Run library tests
-      run: ./gradlew :library:jvmTest
+    - name: Run tests
+      run: ./gradlew :library:jvmTest :shared:jvmTest
 
     - name: Build MSI
       run: ./gradlew :desktopApp:packageMsi
@@ -50,4 +50,6 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: desktop-test-reports
-        path: library/build/reports/tests/jvmTest/
+        path: |
+          library/build/reports/tests/jvmTest/
+          shared/build/reports/tests/jvmTest/
