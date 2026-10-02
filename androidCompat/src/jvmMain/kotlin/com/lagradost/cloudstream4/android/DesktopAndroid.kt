@@ -21,7 +21,10 @@ object DesktopAndroid {
 
     /** Sets the folder extensions keep their files and settings in. Call before loading extensions */
     fun init(dataDir: Path) {
+        if (dataDir == root) return
         root = dataDir
+        // Settings already opened belong to the old folder
+        preferences.clear()
     }
 
     val filesDir: Path get() = root.resolve("files").also { it.createDirectories() }
@@ -42,6 +45,8 @@ object DesktopAndroid {
     var toastHandler: ((String) -> Unit)? = null
 
     fun showToast(message: String) {
+        // Android shows nothing for an empty toast
+        if (message.isBlank()) return
         println("INFO Extension toast: $message")
         toastHandler?.invoke(message)
     }

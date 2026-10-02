@@ -11,10 +11,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -37,6 +40,7 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lagradost.cloudstream4.android.DesktopAndroid
 import com.lagradost.cloudstream4.browse.DetailScreen
 import com.lagradost.cloudstream4.browse.HomeScreen
 import com.lagradost.cloudstream4.browse.LibraryScreen
@@ -50,10 +54,14 @@ import com.lagradost.cloudstream4.browse.SearchScreen
 import com.lagradost.cloudstream4.home.HomeAction
 import com.lagradost.cloudstream4.home.HomeViewModel
 import com.lagradost.cloudstream4.plugins.DesktopPluginManager
+import com.lagradost.cloudstream4.search.DataStoreSearchHistory
 import com.lagradost.cloudstream4.search.SearchViewModel
 import com.lagradost.cloudstream4.settings.ExtensionsScreen
 import com.lagradost.cloudstream4.settings.SettingsHomeScreen
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.consumeAsFlow
 import com.mihon.presentation.LocalBackPress
 import com.mihon.presentation.settings.SearchableSettings
 import org.jetbrains.compose.resources.DrawableResource
@@ -182,7 +190,7 @@ fun AppShell(navigator: AppNavigator) {
     val settings = rememberAppSettings()
     // Kept for the whole session, so switching destination keeps the results
     val home = remember { HomeViewModel(::loadedProviders, settings) }
-    val search = remember { SearchViewModel(::loadedProviders, settings) }
+    val search = remember { SearchViewModel(::loadedProviders, settings, DataStoreSearchHistory.instance) }
     // Plugins load in the background after the window opens, and the provider settings can change at any time
     LaunchedEffect(home) {
         combine(
@@ -191,6 +199,9 @@ fun AppShell(navigator: AppNavigator) {
             settings.provider.preferredMedia.changes(),
         ) { _, _, _ -> }.collect { home.onAction(HomeAction.ProvidersChanged) }
     }
+
+    val toasts = remember { SnackbarHostState() }
+    ExtensionToasts(toasts)
 
     val page = navigator.pages.lastOrNull()
     val hideRail = page is Page.Player && navigator.fullscreen
@@ -240,8 +251,23 @@ fun AppShell(navigator: AppNavigator) {
                 Destination.Library -> LibraryScreen(DataStoreWatchStore.instance, navigator::openDetails)
                 else -> ComingSoon(navigator.destination)
             }
+            SnackbarHost(toasts, Modifier.align(Alignment.BottomCenter).padding(16.dp))
         }
     }
+}
+
+/**
+ * Shows the toasts extensions raise, one after another. They can come from any thread, so they are
+ * queued, and when many arrive at once the oldest are dropped.
+ */
+@Composable
+private fun ExtensionToasts(host: SnackbarHostState) {
+    val queue = remember { Channel<String>(capacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST) }
+    DisposableEffect(queue) {
+        DesktopAndroid.toastHandler = { queue.trySend(it) }
+        onDispose { DesktopAndroid.toastHandler = null }
+    }
+    LaunchedEffect(queue) { queue.consumeAsFlow().collect { host.showSnackbar(it) } }
 }
 
 @Composable

@@ -14,6 +14,7 @@ import com.lagradost.cloudstream4.providers.searchSafely
 import com.lagradost.cloudstream4.providers.withoutQualities
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 
@@ -40,6 +41,8 @@ data class SearchState(
     val results: List<ProviderResults> = emptyList(),
     /** True when a search ran but no provider was enabled to search with */
     val noProviders: Boolean = false,
+    /** Past searches, newest first */
+    val history: List<SearchHistoryEntry> = emptyList(),
 ) {
     val isSearching: Boolean get() = results.any { it.status == ProviderStatus.Loading }
 }
@@ -51,6 +54,10 @@ sealed interface SearchAction {
     /** Fetches the next page from one provider */
     data class LoadMore(val apiName: String) : SearchAction
     data object Clear : SearchAction
+    /** Searches again for a past query */
+    data class SearchFor(val query: String) : SearchAction
+    data class RemoveHistory(val key: String) : SearchAction
+    data object ClearHistory : SearchAction
 }
 
 /**
@@ -62,8 +69,13 @@ sealed interface SearchAction {
 class SearchViewModel(
     private val apis: () -> List<MainAPI>,
     private val settings: AppSettings,
-) : ViewModel(), StateContainer<SearchState> by DefaultStateContainer(SearchState()),
+    private val history: SearchHistoryStore = InMemorySearchHistory(),
+) : ViewModel(), StateContainer<SearchState> by DefaultStateContainer(SearchState(history = history.entries())),
     ActionHandler<SearchAction> {
+
+    init {
+        viewModelScope.launch { history.version.drop(1).collect { updateState { copy(history = this@SearchViewModel.history.entries()) } } }
+    }
 
     /** Parent of every request for the current query, cancelled when a new search starts */
     private var searchJob: Job = SupervisorJob()
@@ -78,8 +90,16 @@ class SearchViewModel(
             is SearchAction.LoadMore -> loadMore(action.apiName)
             SearchAction.Clear -> {
                 cancel()
-                updateState { SearchState() }
+                updateState { SearchState(history = history) }
             }
+
+            is SearchAction.SearchFor -> {
+                updateState { copy(query = action.query) }
+                search(action.query.trim())
+            }
+
+            is SearchAction.RemoveHistory -> history.remove(action.key)
+            SearchAction.ClearHistory -> history.clear()
         }
     }
 
@@ -94,6 +114,7 @@ class SearchViewModel(
             updateState { copy(searchedQuery = "", results = emptyList(), noProviders = false) }
             return
         }
+        history.add(query)
         val provider = settings.provider
         searched = filterProviders(
             apis(),

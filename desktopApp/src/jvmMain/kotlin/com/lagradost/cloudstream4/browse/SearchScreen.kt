@@ -1,6 +1,8 @@
 package com.lagradost.cloudstream4.browse
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,11 +16,13 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -27,13 +31,16 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream4.generated.resources.Res
 import com.lagradost.cloudstream4.generated.resources.close
+import com.lagradost.cloudstream4.generated.resources.history_toggle_off_24px
 import com.lagradost.cloudstream4.generated.resources.search_icon
 import com.lagradost.cloudstream4.generated.resources.title_search
 import com.lagradost.cloudstream4.search.ProviderStatus
 import com.lagradost.cloudstream4.search.SearchAction
+import com.lagradost.cloudstream4.search.SearchHistoryEntry
 import com.lagradost.cloudstream4.search.SearchViewModel
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
@@ -85,6 +92,13 @@ fun SearchScreen(viewModel: SearchViewModel, openExtensions: () -> Unit, openDet
                 "Install an extension, or check the extension languages and media types under Settings > Providers.",
             ) { Button(onClick = openExtensions) { Text("Open Extensions") } }
 
+            state.searchedQuery.isEmpty() && state.history.isNotEmpty() -> SearchHistory(
+                entries = state.history,
+                onSearch = { viewModel.onAction(SearchAction.SearchFor(it.query)) },
+                onRemove = { viewModel.onAction(SearchAction.RemoveHistory(it.key)) },
+                onClear = { viewModel.onAction(SearchAction.ClearHistory) },
+            )
+
             state.searchedQuery.isEmpty() -> Message("Search all your extensions", "Type a title and press Enter.")
 
             found.isEmpty() && !state.isSearching -> Message(
@@ -117,6 +131,45 @@ fun SearchScreen(viewModel: SearchViewModel, openExtensions: () -> Unit, openDet
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
                     )
+                }
+            }
+        }
+    }
+}
+
+/** Past searches, newest first, like the Android app's search history */
+@Composable
+private fun SearchHistory(
+    entries: List<SearchHistoryEntry>,
+    onSearch: (SearchHistoryEntry) -> Unit,
+    onRemove: (SearchHistoryEntry) -> Unit,
+    onClear: () -> Unit,
+) {
+    LazyColumn(contentPadding = PaddingValues(bottom = 24.dp), modifier = Modifier.fillMaxSize()) {
+        item {
+            Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Recent searches", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = onClear) { Text("Clear all") }
+            }
+        }
+        items(entries, key = { it.key }) { entry ->
+            Row(
+                Modifier.fillMaxWidth().clickable { onSearch(entry) }.padding(start = 24.dp, end = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    painterResource(Res.drawable.history_toggle_off_24px),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    entry.query,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
+                )
+                IconButton(onClick = { onRemove(entry) }) {
+                    Icon(painterResource(Res.drawable.close), contentDescription = "Remove from history")
                 }
             }
         }
