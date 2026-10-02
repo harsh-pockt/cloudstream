@@ -39,9 +39,11 @@ import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lagradost.cloudstream4.browse.DetailScreen
 import com.lagradost.cloudstream4.browse.HomeScreen
+import com.lagradost.cloudstream4.browse.LibraryScreen
 import com.lagradost.cloudstream4.browse.Message
 import com.lagradost.cloudstream4.detail.DetailViewModel
 import com.lagradost.cloudstream4.detail.PlayRequest
+import com.lagradost.cloudstream4.library.DataStoreWatchStore
 import com.lagradost.cloudstream4.player.LinksViewModel
 import com.lagradost.cloudstream4.player.PlayerScreen
 import com.lagradost.cloudstream4.browse.SearchScreen
@@ -235,6 +237,7 @@ fun AppShell(navigator: AppNavigator) {
 
                 Destination.Home -> HomeScreen(home, navigator::openExtensions, navigator::openDetails)
                 Destination.Search -> SearchScreen(search, navigator::openExtensions, navigator::openDetails)
+                Destination.Library -> LibraryScreen(DataStoreWatchStore.instance, navigator::openDetails)
                 else -> ComingSoon(navigator.destination)
             }
         }
@@ -255,7 +258,7 @@ private fun PageContent(page: Page, navigator: AppNavigator) {
     }
     when (page) {
         is Page.Details -> DetailScreen(
-            viewModel = viewModel { DetailViewModel(api, page.url) },
+            viewModel = viewModel { DetailViewModel(api, page.url, DataStoreWatchStore.instance) },
             onBack = { navigator.back() },
             onPlay = navigator::play,
             onOpen = navigator::openDetails,

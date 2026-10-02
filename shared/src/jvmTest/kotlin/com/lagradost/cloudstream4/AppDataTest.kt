@@ -29,6 +29,7 @@ class AppDataTest {
         file(root.resolve("settings.json"))
         file(root.resolve("plugins/A.jar"))
         file(root.resolve("android/shared_prefs/a.json"))
+        file(root.resolve("android/shared_prefs/rebuild_preference.json"))
         file(root.resolve("android/cache/c"))
         file(cache.resolve("posters/p.jpg"))
     }
@@ -45,7 +46,8 @@ class AppDataTest {
 
         data.reset(AppData.Reset.EXTENSIONS)
         assertFalse(root.resolve("plugins").exists())
-        assertFalse(root.resolve("android").exists())
+        assertFalse(root.resolve("android/shared_prefs/a.json").exists())
+        assertTrue(root.resolve("android/shared_prefs/rebuild_preference.json").exists(), "The library stays")
         assertTrue(root.resolve("settings.json").exists())
 
         data.reset(AppData.Reset.EVERYTHING)

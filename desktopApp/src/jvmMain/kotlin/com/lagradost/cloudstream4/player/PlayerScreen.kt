@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -43,6 +44,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream4.library.DataStoreWatchStore
+import com.lagradost.cloudstream4.library.saveProgress
 import com.lagradost.cloudstream4.browse.Message
 import com.lagradost.cloudstream4.generated.resources.Res
 import com.lagradost.cloudstream4.generated.resources.arrow_back
@@ -76,10 +79,19 @@ fun PlayerScreen(
     val currentBack by rememberUpdatedState(onBack)
     val currentFullscreen by rememberUpdatedState(onToggleFullscreen)
 
+    // Where playback is, in ms: it starts where the user left off, and a new source carries on from there
+    val tracking = viewModel.request.tracking
+    val playedTo = remember { longArrayOf(tracking?.startPositionMs ?: 0, 0) }
+    fun saveProgress(positionMs: Long = playedTo[0], durationMs: Long = playedTo[1]) {
+        if (tracking != null) runCatching { DataStoreWatchStore.instance.saveProgress(tracking, positionMs, durationMs) }
+            .onFailure { println("ERROR PlayerScreen: Could not save the playback position: $it") }
+    }
+    DisposableEffect(Unit) { onDispose { saveProgress() } }
+
     // A new link was picked, by hand or because the last one failed
     val selected = state.selectedLink
     LaunchedEffect(selected?.url) {
-        if (selected != null) player.play(selected)
+        if (selected != null) player.play(selected, playedTo[0].takeIf { it > 0 }?.let { it / 1000.0 })
     }
     LaunchedEffect(player) {
         player.events.collect { event ->
@@ -87,13 +99,19 @@ fun PlayerScreen(
                 MpvEvent.Back -> currentBack()
                 MpvEvent.ToggleFullscreen -> currentFullscreen()
                 is MpvEvent.Failed -> viewModel.onAction(LinksAction.Failed(event.url, event.message))
-                MpvEvent.Ended -> Unit
+                MpvEvent.Ended -> saveProgress(playedTo[1], playedTo[1])
             }
         }
     }
     LaunchedEffect(player) {
+        var seconds = 0
         while (true) {
             status = player.status()
+            if (status.duration > 0 && status.position > 0) {
+                playedTo[0] = (status.position * 1000).toLong()
+                playedTo[1] = (status.duration * 1000).toLong()
+                if (++seconds % 10 == 0) saveProgress()
+            }
             delay(1000)
         }
     }

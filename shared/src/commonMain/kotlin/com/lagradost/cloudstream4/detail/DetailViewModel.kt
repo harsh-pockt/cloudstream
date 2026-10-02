@@ -16,8 +16,16 @@ import com.lagradost.cloudstream3.mvvm.Resource
 import com.lagradost.cloudstream4.compose.ActionHandler
 import com.lagradost.cloudstream4.compose.DefaultStateContainer
 import com.lagradost.cloudstream4.compose.StateContainer
+import com.lagradost.cloudstream4.library.InMemoryWatchStore
+import com.lagradost.cloudstream4.library.PlaybackPosition
+import com.lagradost.cloudstream4.library.PlaybackTracking
+import com.lagradost.cloudstream4.library.TitleHeader
+import com.lagradost.cloudstream4.library.WatchIds
+import com.lagradost.cloudstream4.library.WatchStore
+import com.lagradost.cloudstream4.library.WatchType
 import com.lagradost.cloudstream4.providers.loadSafely
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 /** What the player needs to find and play the links of one movie or episode */
@@ -27,6 +35,16 @@ data class PlayRequest(
     /** For example "S1 E3 · Pilot", null for a movie */
     val episodeLabel: String?,
     val data: String,
+    /** Where to save progress, null when nothing is tracked */
+    val tracking: PlaybackTracking? = null,
+)
+
+/** Where Continue watching left off: an episode, or the movie when [episode] is null */
+data class ResumeTarget(
+    val episode: Episode?,
+    /** For example "S1 E3", null for a movie */
+    val label: String?,
+    val positionMs: Long,
 )
 
 /** One season of episodes, or all episodes when the provider has no seasons */
@@ -54,11 +72,23 @@ data class DetailState(
     val selectedSeason: Int = 0,
     /** Why this item cannot be played on desktop, for example a torrent */
     val unsupported: String? = null,
-)
+    /** The library list the title is in */
+    val bookmark: WatchType = WatchType.NONE,
+    /** How far each episode, or the movie by the title's id, was watched, by its id */
+    val progress: Map<Int, PlaybackPosition> = emptyMap(),
+    /** The ids the Android app gives the episodes */
+    val episodeIds: Map<Episode, Int> = emptyMap(),
+    val titleId: Int? = null,
+    val resume: ResumeTarget? = null,
+) {
+    fun progressOf(episode: Episode): PlaybackPosition? = episodeIds[episode]?.let { progress[it] }
+}
 
 sealed interface DetailAction {
     data class SelectSeason(val index: Int) : DetailAction
     data class SelectDub(val dub: DubStatus) : DetailAction
+    /** Puts the title in a library list, or takes it out with [WatchType.NONE] */
+    data class SetBookmark(val type: WatchType) : DetailAction
     data object Retry : DetailAction
 }
 
@@ -66,6 +96,7 @@ sealed interface DetailAction {
 class DetailViewModel(
     private val api: MainAPI,
     private val url: String,
+    private val store: WatchStore = InMemoryWatchStore(),
 ) : ViewModel(), StateContainer<DetailState> by DefaultStateContainer(DetailState()),
     ActionHandler<DetailAction> {
 
@@ -75,6 +106,8 @@ class DetailViewModel(
 
     init {
         load()
+        // Progress saved by the player shows when the user comes back
+        viewModelScope.launch { store.version.drop(1).collect { updateState { withWatchData(this) } } }
     }
 
     override fun onAction(action: DetailAction) {
@@ -91,8 +124,37 @@ class DetailViewModel(
                 }
             }
 
+            is DetailAction.SetBookmark -> {
+                val header = header() ?: return
+                store.setBookmark(header, action.type)
+                updateState { copy(bookmark = action.type) }
+            }
+
             DetailAction.Retry -> load()
         }
+    }
+
+    private fun header(): TitleHeader? {
+        val response = state.value.response ?: return null
+        val id = state.value.titleId ?: return null
+        return TitleHeader(id, api.name, response.url, response.name, response.type, response.posterUrl, response.posterHeaders, response.year, response.plot)
+    }
+
+    /** The library list, progress and where to resume, read again from the store */
+    private fun withWatchData(state: DetailState): DetailState {
+        val id = state.titleId ?: return state
+        val ids = state.episodeIds.values + id
+        val progress = ids.mapNotNull { episodeId -> store.position(episodeId)?.let { episodeId to it } }.toMap()
+        val resume = store.resume(id)?.let { entry ->
+            val episode = entry.episodeId?.let { episodeId -> state.episodeIds.entries.firstOrNull { it.value == episodeId }?.key }
+            val position = progress[entry.episodeId ?: id]?.takeUnless { it.watched }?.positionMs ?: 0
+            when {
+                episode != null -> ResumeTarget(episode, episodeNumber(episode), position)
+                state.movieData != null && position > 0 -> ResumeTarget(null, null, position)
+                else -> null
+            }
+        }
+        return state.copy(bookmark = store.bookmark(id)?.status ?: WatchType.NONE, progress = progress, resume = resume)
     }
 
     private fun load() {
@@ -115,8 +177,9 @@ class DetailViewModel(
         }
         val dubs = episodesByDub.keys.filterNotNull()
         val dub = dubs.firstOrNull()
+        val titleId = WatchIds.titleId(response, api)
         updateState {
-            DetailState(
+            withWatchData(DetailState(
                 status = DetailStatus.Done,
                 response = response,
                 movieData = when (response) {
@@ -128,15 +191,35 @@ class DetailViewModel(
                 selectedDub = dub,
                 seasons = groupSeasons(response, episodesByDub[dub].orEmpty()),
                 unsupported = if (response is TorrentLoadResponse) "Torrents cannot be played on desktop yet." else null,
-            )
+                titleId = titleId,
+                episodeIds = WatchIds.episodeIds(response, titleId),
+            ))
         }
     }
 
-    /** What to play for an episode, or for the movie when [episode] is null */
-    fun playRequest(episode: Episode? = null): PlayRequest? {
-        val response = state.value.response ?: return null
-        val data = episode?.data ?: state.value.movieData ?: return null
-        return PlayRequest(api.name, response.name, episode?.let(::episodeLabel), data)
+    /**
+     * What to play for an episode, or for the movie when [episode] is null. It starts where it was
+     * left unless it was finished, and its progress is saved with the next episode to move on to.
+     */
+    fun playRequest(episode: Episode? = null, fromStart: Boolean = false): PlayRequest? {
+        val current = state.value
+        val response = current.response ?: return null
+        val data = episode?.data ?: current.movieData ?: return null
+        val header = header()
+        val id = if (episode == null) current.titleId else current.episodeIds[episode]
+        val tracking = if (header != null && id != null) {
+            val ordered = current.seasons.flatMap { it.episodes }
+            val next = episode?.let { ordered.getOrNull(ordered.indexOf(it) + 1) }
+            PlaybackTracking(
+                header = header,
+                id = id,
+                episode = episode?.episode,
+                season = episode?.season,
+                next = next?.let { n -> current.episodeIds[n]?.let { PlaybackTracking.NextEpisode(it, n.episode, n.season) } },
+                startPositionMs = if (fromStart) 0 else current.progress[id]?.takeUnless { it.watched }?.positionMs ?: 0,
+            )
+        } else null
+        return PlayRequest(api.name, response.name, episode?.let(::episodeLabel), data, tracking)
     }
 
     companion object {
@@ -154,6 +237,10 @@ class DetailViewModel(
                     SeasonGroup(season, label, list)
                 }
         }
+
+        /** For example "S1 E3", or "Episode" without numbers */
+        fun episodeNumber(episode: Episode): String =
+            listOfNotNull(episode.season?.let { "S$it" }, episode.episode?.let { "E$it" }).joinToString(" ").ifEmpty { "Episode" }
 
         /** For example "S1 E3 · Pilot" */
         fun episodeLabel(episode: Episode): String {

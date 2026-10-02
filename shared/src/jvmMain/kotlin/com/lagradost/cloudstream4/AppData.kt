@@ -30,7 +30,7 @@ class AppData(
         /** Posters and other downloaded files the app can fetch again */
         CACHE("Clear the cache"),
 
-        /** Installed extensions and their data. Repositories and settings stay */
+        /** Installed extensions and their files. Repositories, settings and the library stay */
         EXTENSIONS("Remove all extensions"),
 
         /** Everything, as if the app had never been used */
@@ -85,7 +85,11 @@ class AppData(
             }
             Reset.EXTENSIONS -> {
                 delete(root.resolve("plugins"))
-                delete(root.resolve("android"))
+                // The app's own data store, which holds the library, is kept like on Android
+                val android = root.resolve("android")
+                if (android.isDirectory()) android.listDirectoryEntries().filter { it.name != "shared_prefs" }.forEach(::delete)
+                val prefs = android.resolve("shared_prefs")
+                if (prefs.isDirectory()) prefs.listDirectoryEntries().filter { it.name != APP_DATA_STORE }.forEach(::delete)
             }
             Reset.EVERYTHING -> {
                 deleteContents(cache)
@@ -133,6 +137,9 @@ class AppData(
 
     companion object {
         private const val RETRIES = 10
+
+        /** DataStore's PREFERENCES_NAME, the app's settings store that also holds the library */
+        private const val APP_DATA_STORE = "rebuild_preference.json"
 
         val instance: AppData by lazy { AppData(AppDirs.root, AppDirs.cache) }
     }
