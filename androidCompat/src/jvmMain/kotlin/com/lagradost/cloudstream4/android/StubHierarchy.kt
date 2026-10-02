@@ -127,6 +127,15 @@ internal object StubHierarchy {
         extends("androidx/recyclerview/widget/ItemTouchHelper\$Callback", "androidx/recyclerview/widget/ItemTouchHelper\$SimpleCallback")
         extends("android/widget/BaseAdapter", "android/widget/ArrayAdapter")
 
+        // CloudStream app account and sync providers, which some extensions read
+        val sync = "com/lagradost/cloudstream3/syncproviders"
+        extends("$sync/AuthAPI", "$sync/SyncAPI", "$sync/SubtitleAPI", "$sync/BackupAPI")
+        extends("$sync/SyncAPI", "$sync/providers/AniListApi", "$sync/providers/MALApi", "$sync/providers/KitsuApi",
+            "$sync/providers/SimklApi")
+        extends("$sync/SubtitleAPI", "$sync/providers/OpenSubtitlesApi", "$sync/providers/SubDlApi",
+            "$sync/providers/SubSourceApi")
+        extends("$sync/AuthRepo", "$sync/SyncRepo", "$sync/SubtitleRepo")
+
         // Lifecycle
         extends("androidx/lifecycle/LiveData", "androidx/lifecycle/MutableLiveData")
         extends("androidx/lifecycle/MutableLiveData", "androidx/lifecycle/MediatorLiveData")

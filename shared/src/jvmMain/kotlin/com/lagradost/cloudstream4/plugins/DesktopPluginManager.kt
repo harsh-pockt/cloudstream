@@ -7,6 +7,9 @@ import com.lagradost.cloudstream4.AppDirs
 import com.lagradost.cloudstream4.android.DesktopAndroid
 import com.lagradost.cloudstream4.android.DexConverter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,6 +49,9 @@ data class InstalledPlugin(
     /** From the repository, with %size% where the size goes like Android */
     val iconUrl: String? = null,
 )
+
+/** A newer version of an installed plugin in its repository */
+data class PluginUpdate(val installed: InstalledPlugin, val available: RepoPlugin)
 
 /**
  * Installs plugin jars into one folder, keeps a list of them in installed.json and loads them.
@@ -137,6 +143,31 @@ class DesktopPluginManager(
                 loadLocked(plugin.internalName)?.let { throw it }
             }
         }
+    }
+
+    /** Installed plugins with a newer version in their repository. A repository that fails to load is skipped */
+    suspend fun findUpdates(): List<PluginUpdate> = coroutineScope {
+        _installed.value.groupBy { it.repositoryUrl }.map { (url, plugins) ->
+            async {
+                val available = runCatching { client.fetchPlugins(client.fetchRepository(url)) }
+                    .onFailure { println("WARNING DesktopPluginManager: Could not check $url for updates: $it") }
+                    .getOrNull() ?: return@async emptyList()
+                plugins.mapNotNull { plugin ->
+                    available.firstOrNull { it.internalName == plugin.internalName && it.version > plugin.version && it.canInstall }
+                        ?.let { PluginUpdate(plugin, it) }
+                }
+            }
+        }.awaitAll().flatten()
+    }
+
+    /** Installs the updates one after another. Returns why each one that failed did, by internal name */
+    suspend fun installUpdates(updates: List<PluginUpdate>): Map<String, String> {
+        val failed = mutableMapOf<String, String>()
+        for (update in updates) {
+            runCatching { install(update.installed.repositoryUrl, update.available) }
+                .onFailure { failed[update.installed.internalName] = it.message ?: it.toString() }
+        }
+        return failed
     }
 
     suspend fun uninstall(internalName: String) = lock.withLock {
