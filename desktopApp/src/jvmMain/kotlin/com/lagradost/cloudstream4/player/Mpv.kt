@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import java.awt.Canvas
 import java.awt.Color
+import java.awt.Toolkit
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.awt.event.MouseWheelEvent
 import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CountDownLatch
@@ -68,6 +72,8 @@ data class MpvTrack(
     val lang: String?,
     val selected: Boolean,
     val external: Boolean,
+    /** The file an external track was added from */
+    val externalFilename: String? = null,
 ) {
     val label: String get() = listOfNotNull(title, lang).distinct().joinToString(" · ").ifEmpty { "Track $id" }
 }
@@ -78,13 +84,22 @@ data class MpvStatus(
     val paused: Boolean = false,
     val buffering: Boolean = false,
     val tracks: List<MpvTrack> = emptyList(),
+    /** 0 to 100 */
+    val volume: Int = 100,
+    val muted: Boolean = false,
+    val speed: Double = 1.0,
+    /** Seconds the subtitles are shown later, negative for earlier */
+    val subDelay: Double = 0.0,
 )
 
+/** A subtitle file to show with a link, added again whenever the link changes */
+data class MpvSubtitle(val file: File, val title: String, val select: Boolean)
+
 sealed interface MpvEvent {
-    /** Escape or Backspace was pressed inside the video */
-    data object Back : MpvEvent
     /** F or a double click inside the video */
     data object ToggleFullscreen : MpvEvent
+    /** A single click inside the video */
+    data object Click : MpvEvent
     data object Ended : MpvEvent
     /** The file could not be played, for example a refused or broken link */
     data class Failed(val url: String, val message: String) : MpvEvent
@@ -93,7 +108,7 @@ sealed interface MpvEvent {
 /**
  * One mpv player drawing into [canvas]. It starts when the canvas is shown and shuts down when the
  * canvas is removed, before its window is destroyed. Calls made before it started are run then.
- * mpv's own on-screen controller gives the seek bar and buttons, and its default keys work.
+ * The app draws the controls; the mouse over the video is handled here and reported as [events].
  */
 class MpvPlayer internal constructor(private val lib: MpvLibrary) {
     private val ctx: Pointer = lib.mpv_create() ?: error("mpv_create failed")
@@ -104,9 +119,20 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
     private val stopped = CountDownLatch(1)
     /** The url being played, so a failure can be reported for the right link */
     @Volatile private var currentUrl: String? = null
+    /** Whether the current file finished loading. Subtitles can only be added to a loaded file */
+    private var fileLoaded = false
+    private val afterLoad = mutableListOf<() -> Unit>()
 
     private val _events = Channel<MpvEvent>(Channel.UNLIMITED)
     val events: Flow<MpvEvent> = _events.receiveAsFlow()
+
+    /** Called on every mouse move over the video, from the AWT thread */
+    @Volatile var onMouseMove: (() -> Unit)? = null
+
+    // A double click toggles full screen, so a single click waits a moment to be sure it is not one
+    private val singleClick = javax.swing.Timer(
+        ((Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval") as? Int) ?: 300).coerceAtMost(300),
+    ) { _events.trySend(MpvEvent.Click) }.apply { isRepeats = false }
 
     val canvas: Canvas = object : Canvas() {
         override fun addNotify() {
@@ -115,32 +141,57 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
         }
 
         override fun removeNotify() {
+            singleClick.stop()
             shutdown()
             super.removeNotify()
         }
-    }.apply { background = Color.BLACK }
+    }.apply {
+        background = Color.BLACK
+        // Keys stay with the app, which handles them the same inside and outside the video
+        isFocusable = false
+        // Embedded mpv takes no input itself: its window is disabled, so the mouse reaches this canvas
+        val mouse = object : MouseAdapter() {
+            override fun mouseMoved(e: MouseEvent) {
+                onMouseMove?.invoke()
+            }
+
+            override fun mouseDragged(e: MouseEvent) = mouseMoved(e)
+
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.button != MouseEvent.BUTTON1) return
+                when {
+                    e.clickCount == 1 -> singleClick.restart()
+                    e.clickCount == 2 -> {
+                        singleClick.stop()
+                        _events.trySend(MpvEvent.ToggleFullscreen)
+                    }
+                }
+            }
+
+            override fun mouseWheelMoved(e: MouseWheelEvent) {
+                // The wheel changes the volume, as in most desktop players
+                changeVolume(if (e.wheelRotation < 0) 5 else -5)
+            }
+        }
+        addMouseListener(mouse)
+        addMouseMotionListener(mouse)
+        addMouseWheelListener(mouse)
+    }
 
     private fun start(windowId: Long) = synchronized(this) {
         if (started || closed) return
         started = true
         option("wid", windowId.toString())
-        option("osc", "yes")
-        option("input-default-bindings", "yes")
-        option("input-vo-keyboard", "yes")
+        // The app draws its own controls. mpv's would not work anyway: embedded, it gets no mouse input
+        option("osc", "no")
         option("hwdec", "auto-safe")
         // Stay on the last frame at the end instead of closing the file
         option("keep-open", "yes")
         option("idle", "yes")
         option("force-window", "yes")
         option("sub-auto", "no")
-        // Between files mpv would show its own logo and invite dropping files, neither belongs here
-        option("script-opts", "osc-idlescreen=no")
         option("drag-and-drop", "no")
         check("initialize", lib.mpv_initialize(ctx))
-        // Keys inside the video go to mpv, so the app's own keys are rebound to messages it sends back
-        for ((key, message) in listOf("ESC" to "cs-back", "BS" to "cs-back", "f" to "cs-fullscreen", "MBTN_LEFT_DBL" to "cs-fullscreen")) {
-            command("keybind", key, "script-message $message")
-        }
         eventThread = Thread(::eventLoop, "mpv-events").apply { isDaemon = true; start() }
         pending.forEach { it() }
         pending.clear()
@@ -175,6 +226,11 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
                 val event = lib.mpv_wait_event(ctx, -1.0)
                 when (event.getInt(0)) {
                     MPV_EVENT_SHUTDOWN -> return
+                    MPV_EVENT_FILE_LOADED -> synchronized(this) {
+                        fileLoaded = true
+                        afterLoad.forEach { it() }
+                        afterLoad.clear()
+                    }
                     MPV_EVENT_END_FILE -> {
                         val data = event.getPointer(16)
                         val reason = data.getInt(0)
@@ -182,15 +238,6 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
                         when (reason) {
                             END_FILE_REASON_EOF -> _events.trySend(MpvEvent.Ended)
                             END_FILE_REASON_ERROR -> _events.trySend(MpvEvent.Failed(url, lib.mpv_error_string(data.getInt(4))))
-                        }
-                    }
-
-                    MPV_EVENT_CLIENT_MESSAGE -> {
-                        val data = event.getPointer(16)
-                        if (data.getInt(0) < 1) continue
-                        when (data.getPointer(8).getPointer(0).getString(0)) {
-                            "cs-back" -> _events.trySend(MpvEvent.Back)
-                            "cs-fullscreen" -> _events.trySend(MpvEvent.ToggleFullscreen)
                         }
                     }
                 }
@@ -219,7 +266,7 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
      * Plays a link with the headers the provider gave for it. The referer and user agent have their
      * own mpv options, every other header is sent as is on every request, playlists and segments included.
      */
-    fun play(link: ExtractorLink, startSeconds: Double? = null) = whenStarted {
+    fun play(link: ExtractorLink, startSeconds: Double? = null, subtitles: List<MpvSubtitle> = emptyList()) = whenStarted {
         val headers = link.headers.toMutableMap()
         fun take(name: String) = headers.keys.firstOrNull { it.equals(name, ignoreCase = true) }?.let { headers.remove(it) }
         val userAgent = take("User-Agent") ?: USER_AGENT
@@ -235,14 +282,26 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
         command("set", "start", startSeconds?.let { "+$it" } ?: "none")
         // keep-open pauses at the end of a file, which would carry over to the next one
         command("set", "pause", "no")
+        fileLoaded = false
+        afterLoad.clear()
         command("loadfile", link.url, "replace")
         link.audioTracks.forEach { command("audio-add", it.url, "auto") }
+        // A new file drops the subtitles added to the last one
+        subtitles.forEach { addSubtitle(it.file, it.title, it.select) }
     }
 
-    /** Adds a subtitle file and shows it */
-    fun addSubtitle(file: File, title: String) = whenStarted {
-        command("sub-add", file.absolutePath, "select", title)
+    /** Runs once the current file is loaded */
+    private fun whenLoaded(action: () -> Unit) = whenStarted {
+        if (fileLoaded) action() else afterLoad += action
     }
+
+    /** Adds a subtitle file, shown when [select] is true */
+    fun addSubtitle(file: File, title: String, select: Boolean = true) = whenLoaded {
+        command("sub-add", file.absolutePath, if (select) "select" else "auto", title)
+    }
+
+    /** Hides subtitles once the file is loaded, for a new link after the user turned them off */
+    fun hideSubtitlesWhenLoaded() = whenLoaded { command("set", "sid", "no") }
 
     /** Shows a subtitle track, or hides subtitles when [id] is null */
     fun selectSubtitle(id: Int?) = whenStarted { command("set", "sid", id?.toString() ?: "no") }
@@ -253,7 +312,19 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
 
     fun seek(seconds: Double) = whenStarted { command("seek", seconds.toString(), "relative") }
 
+    fun seekTo(seconds: Double) = whenStarted { command("seek", seconds.toString(), "absolute") }
+
     fun changeVolume(delta: Int) = whenStarted { command("add", "volume", delta.toString()) }
+
+    fun setVolume(volume: Int) = whenStarted { command("set", "volume", volume.coerceIn(0, 100).toString()) }
+
+    fun toggleMute() = whenStarted { command("cycle", "mute") }
+
+    fun setSpeed(speed: Double) = whenStarted { command("set", "speed", speed.toString()) }
+
+    fun changeSubDelay(seconds: Double) = whenStarted { command("add", "sub-delay", seconds.toString()) }
+
+    fun resetSubDelay() = whenStarted { command("set", "sub-delay", "0") }
 
     fun status(): MpvStatus {
         if (!started || closed) return MpvStatus()
@@ -267,6 +338,7 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
                 lang = property("${prefix}lang"),
                 selected = property("${prefix}selected") == "yes",
                 external = property("${prefix}external") == "yes",
+                externalFilename = property("${prefix}external-filename"),
             )
         }
         return MpvStatus(
@@ -275,13 +347,17 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
             paused = property("pause") == "yes",
             buffering = property("paused-for-cache") == "yes",
             tracks = tracks,
+            volume = property("volume")?.toDoubleOrNull()?.toInt() ?: 100,
+            muted = property("mute") == "yes",
+            speed = property("speed")?.toDoubleOrNull() ?: 1.0,
+            subDelay = property("sub-delay")?.toDoubleOrNull() ?: 0.0,
         )
     }
 
     private companion object {
         const val MPV_EVENT_SHUTDOWN = 1
         const val MPV_EVENT_END_FILE = 7
-        const val MPV_EVENT_CLIENT_MESSAGE = 16
+        const val MPV_EVENT_FILE_LOADED = 8
         const val END_FILE_REASON_EOF = 0
         const val END_FILE_REASON_ERROR = 4
     }
