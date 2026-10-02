@@ -34,6 +34,8 @@ class SavedWindowState(preferences: PreferenceStore) {
     }
 
     fun save(state: WindowState) {
+        // Full screen is only for watching, the window opens as it was before that
+        if (state.placement == WindowPlacement.Fullscreen) return
         maximized.set(state.placement == WindowPlacement.Maximized)
         // Only remember the floating size, otherwise un-maximizing would keep the window full screen
         if (state.placement != WindowPlacement.Floating) return

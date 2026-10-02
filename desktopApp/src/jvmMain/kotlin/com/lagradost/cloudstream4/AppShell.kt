@@ -33,7 +33,17 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream4.generated.resources.*
 import com.lagradost.cloudstream3.APIHolder
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lagradost.cloudstream4.browse.DetailScreen
 import com.lagradost.cloudstream4.browse.HomeScreen
+import com.lagradost.cloudstream4.browse.Message
+import com.lagradost.cloudstream4.detail.DetailViewModel
+import com.lagradost.cloudstream4.detail.PlayRequest
+import com.lagradost.cloudstream4.player.LinksViewModel
+import com.lagradost.cloudstream4.player.PlayerScreen
 import com.lagradost.cloudstream4.browse.SearchScreen
 import com.lagradost.cloudstream4.home.HomeAction
 import com.lagradost.cloudstream4.home.HomeViewModel
@@ -60,8 +70,17 @@ enum class Destination(
     Settings(Res.string.title_settings, Res.drawable.settings_icon_outline, Res.drawable.settings_icon_filled),
 }
 
+/** A page opened on top of a destination. It owns the view models made for it, cleared when it closes */
+sealed class Page : ViewModelStoreOwner {
+    override val viewModelStore = ViewModelStore()
+
+    class Details(val apiName: String, val url: String) : Page()
+    class Player(val request: PlayRequest) : Page()
+}
+
 /**
- * Navigation for the desktop app: a rail on the left and the selected destination on the right.
+ * Navigation for the desktop app: a rail on the left and the selected destination on the right,
+ * with pages such as details and the player opened on top.
  * Ctrl+1 to Ctrl+4 switch destination, Ctrl+F opens Search, Escape or Alt+Left goes back.
  */
 class AppNavigator {
@@ -71,10 +90,39 @@ class AppNavigator {
     /** Settings pages opened on top of the settings home, last is shown */
     val settingsStack = mutableStateListOf<SearchableSettings>()
 
+    /** Details and player pages, last is shown */
+    val pages = mutableStateListOf<Page>()
+
+    /** The player fills the screen, without the rail or the window frame */
+    var fullscreen by mutableStateOf(false)
+
     fun select(destination: Destination) {
+        closePages()
         // Selecting Settings again returns to the settings home
         if (destination == Destination.Settings && this.destination == Destination.Settings) settingsStack.clear()
         this.destination = destination
+    }
+
+    fun openDetails(apiName: String, url: String) {
+        pages.add(Page.Details(apiName, url))
+    }
+
+    fun play(request: PlayRequest) {
+        pages.add(Page.Player(request))
+    }
+
+    fun toggleFullscreen() {
+        fullscreen = !fullscreen && pages.lastOrNull() is Page.Player
+    }
+
+    private fun popPage() {
+        val page = pages.removeAt(pages.lastIndex)
+        if (page is Page.Player) fullscreen = false
+        page.viewModelStore.clear()
+    }
+
+    private fun closePages() {
+        while (pages.isNotEmpty()) popPage()
     }
 
     fun open(page: SearchableSettings) {
@@ -83,6 +131,7 @@ class AppNavigator {
 
     /** Settings > Extensions, where plugins are installed */
     fun openExtensions() {
+        closePages()
         destination = Destination.Settings
         settingsStack.clear()
         settingsStack.add(ExtensionsScreen(::open))
@@ -90,6 +139,14 @@ class AppNavigator {
 
     /** Returns false when there is nothing to go back to */
     fun back(): Boolean {
+        if (fullscreen) {
+            fullscreen = false
+            return true
+        }
+        if (pages.isNotEmpty()) {
+            popPage()
+            return true
+        }
         if (destination == Destination.Settings && settingsStack.isNotEmpty()) {
             settingsStack.removeAt(settingsStack.lastIndex)
             return true
@@ -133,8 +190,10 @@ fun AppShell(navigator: AppNavigator) {
         ) { _, _, _ -> }.collect { home.onAction(HomeAction.ProvidersChanged) }
     }
 
+    val page = navigator.pages.lastOrNull()
+    val hideRail = page is Page.Player && navigator.fullscreen
     Row(Modifier.fillMaxSize()) {
-        NavigationRail(
+        if (!hideRail) NavigationRail(
             modifier = Modifier.fillMaxHeight(),
             containerColor = MaterialTheme.colorScheme.background,
         ) {
@@ -158,23 +217,56 @@ fun AppShell(navigator: AppNavigator) {
                 }
             }
         }
-        VerticalDivider()
+        if (!hideRail) VerticalDivider()
         Box(Modifier.weight(1f).fillMaxHeight()) {
-            when (navigator.destination) {
+            if (page != null) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides page) {
+                    PageContent(page, navigator)
+                }
+            } else when (navigator.destination) {
                 Destination.Settings -> {
-                    val page = navigator.settingsStack.lastOrNull()
+                    val settingsPage = navigator.settingsStack.lastOrNull()
                         ?: remember(navigator) { SettingsHomeScreen(navigator::open) }
                     val back: (() -> Unit)? = if (navigator.settingsStack.isEmpty()) null else ({ navigator.back() })
                     CompositionLocalProvider(LocalBackPress provides back) {
-                        page.Content()
+                        settingsPage.Content()
                     }
                 }
 
-                Destination.Home -> HomeScreen(home, navigator::openExtensions)
-                Destination.Search -> SearchScreen(search, navigator::openExtensions)
+                Destination.Home -> HomeScreen(home, navigator::openExtensions, navigator::openDetails)
+                Destination.Search -> SearchScreen(search, navigator::openExtensions, navigator::openDetails)
                 else -> ComingSoon(navigator.destination)
             }
         }
+    }
+}
+
+@Composable
+private fun PageContent(page: Page, navigator: AppNavigator) {
+    val apiName = when (page) {
+        is Page.Details -> page.apiName
+        is Page.Player -> page.request.apiName
+    }
+    // The provider can be gone if its plugin was uninstalled while the page was open
+    val api = remember(apiName) { APIHolder.getApiFromNameNull(apiName) }
+    if (api == null) {
+        Message("$apiName is not loaded", "Its extension may have been uninstalled.")
+        return
+    }
+    when (page) {
+        is Page.Details -> DetailScreen(
+            viewModel = viewModel { DetailViewModel(api, page.url) },
+            onBack = { navigator.back() },
+            onPlay = navigator::play,
+            onOpen = navigator::openDetails,
+        )
+
+        is Page.Player -> PlayerScreen(
+            viewModel = viewModel { LinksViewModel(api, page.request) },
+            fullscreen = navigator.fullscreen,
+            onBack = { navigator.back() },
+            onToggleFullscreen = navigator::toggleFullscreen,
+        )
     }
 }
 

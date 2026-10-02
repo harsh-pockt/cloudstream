@@ -1,4 +1,7 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import java.net.URI
+import java.security.MessageDigest
+import javax.inject.Inject
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -15,6 +18,8 @@ kotlin {
             implementation(libs.kotlinx.coroutines.swing)
             implementation(libs.kotlinx.collections.immutable)
             implementation(libs.coil.network.okhttp)
+            implementation(libs.jna)
+            implementation(libs.okhttp)
             implementation(compose.desktop.currentOs) {
                 // compose.desktop.currentOs imports the wrong material 2, so we exclude it
                 exclude(group = "org.jetbrains.compose.material", module = "material")
@@ -30,12 +35,76 @@ tasks.withType<JavaExec> {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
+/**
+ * Downloads the pinned libmpv build that plays video and unpacks libmpv-2.dll from it.
+ * Both downloads are checked against their SHA-256 and kept in the build folder between builds.
+ */
+abstract class PrepareLibmpv : DefaultTask() {
+    @get:Input abstract val archiveUrl: Property<String>
+    @get:Input abstract val archiveSha256: Property<String>
+    @get:Input abstract val sevenZipUrl: Property<String>
+    @get:Input abstract val sevenZipSha256: Property<String>
+    @get:Internal abstract val downloadDir: DirectoryProperty
+    @get:OutputDirectory abstract val outputDir: DirectoryProperty
+    @get:Inject abstract val exec: ExecOperations
+
+    @TaskAction
+    fun prepare() {
+        val downloads = downloadDir.get().asFile.apply { mkdirs() }
+        val archive = fetch(archiveUrl.get(), archiveSha256.get(), downloads.resolve("mpv-dev.7z"))
+        val sevenZip = fetch(sevenZipUrl.get(), sevenZipSha256.get(), downloads.resolve("7zr.exe"))
+        val out = outputDir.get().asFile.apply { deleteRecursively(); mkdirs() }
+        exec.exec { commandLine(sevenZip.absolutePath, "x", "-y", "-o${out.absolutePath}", archive.absolutePath, "libmpv-2.dll") }
+    }
+
+    private fun fetch(url: String, sha256: String, file: File): File {
+        if (!file.exists() || file.sha256() != sha256) {
+            logger.lifecycle("Downloading $url")
+            URI(url).toURL().openStream().use { input -> file.outputStream().use { input.copyTo(it) } }
+        }
+        val actual = file.sha256()
+        if (actual != sha256) {
+            file.delete()
+            throw GradleException("$url has SHA-256 $actual, expected $sha256")
+        }
+        return file
+    }
+
+    private fun File.sha256(): String =
+        MessageDigest.getInstance("SHA-256").digest(readBytes()).joinToString("") { "%02x".format(it) }
+}
+
+val prepareLibmpv by tasks.registering(PrepareLibmpv::class) {
+    // shinchiro keeps builds for a few months only: before this one is removed, update to a newer build or mirror it
+    archiveUrl = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261002/mpv-dev-x86_64-20261002-git-3186d369f9.7z"
+    archiveSha256 = "d873450cc1a7f881a8a10c33936d9555ad18a3809d827b9dbea55ba55caebcf9"
+    // The archive uses the BCJ2 filter, which only 7-Zip itself unpacks. 7zr.exe is its small standalone version
+    sevenZipUrl = "https://www.7-zip.org/a/7zr.exe"
+    sevenZipSha256 = "ad4c82fadcbdf93c03b4fc440f300509c7d60c5c2f4d183e35d9d70d6957037d"
+    downloadDir = layout.buildDirectory.dir("libmpv-download")
+    // In the windows folder of the app resources, so it is only bundled on Windows
+    outputDir = layout.buildDirectory.dir("libmpv/windows")
+    onlyIf { System.getProperty("os.name").startsWith("Windows") }
+}
+
+/** Files installed next to the app: the notices and licence from src/app-resources, and libmpv on Windows */
+val assembleAppResources by tasks.registering(Sync::class) {
+    from("src/app-resources")
+    from(rootProject.file("LICENSE")) { into("common"); rename { "LICENSE.txt" } }
+    from(prepareLibmpv.map { it.outputDir.get().asFile.parentFile })
+    into(layout.buildDirectory.dir("app-resources"))
+}
+
+tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(assembleAppResources) }
+
 compose.desktop {
     application {
         mainClass = "com.lagradost.cloudstream4.MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "CloudStream"
+            // Holds libmpv-2.dll and the notices, found at runtime through the compose.application.resources.dir property
+            appResourcesRootDir = layout.buildDirectory.dir("app-resources")
             // MSI requires MAJOR.MINOR.BUILD with numbers only, which versionName already is
             packageVersion = libs.versions.versionName.get()
 

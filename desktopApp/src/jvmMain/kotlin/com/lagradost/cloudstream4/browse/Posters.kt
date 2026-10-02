@@ -1,6 +1,7 @@
 package com.lagradost.cloudstream4.browse
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -66,34 +67,43 @@ fun desktopImageLoader(context: PlatformContext): ImageLoader = ImageLoader.Buil
 private val verticalWidth = 140.dp
 private val horizontalWidth = 240.dp
 
-/** A poster with its title underneath. Providers may need their own headers to serve the image */
+/** An image from a provider, which may need its own headers to serve it */
 @Composable
-fun PosterCard(item: SearchResponse, horizontal: Boolean, modifier: Modifier = Modifier) {
+fun RemoteImage(url: String?, headers: Map<String, String>?, contentDescription: String?, modifier: Modifier = Modifier) {
     val context = LocalPlatformContext.current
-    val request = remember(item.posterUrl, item.posterHeaders) {
+    val request = remember(url, headers) {
         ImageRequest.Builder(context)
-            .data(item.posterUrl)
+            .data(url)
             .httpHeaders(NetworkHeaders.Builder().apply {
                 set("User-Agent", USER_AGENT)
-                item.posterHeaders?.forEach { (key, value) -> set(key, value) }
+                headers?.forEach { (key, value) -> set(key, value) }
             }.build())
             .build()
     }
-    Column(modifier.width(if (horizontal) horizontalWidth else verticalWidth)) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(if (horizontal) 16f / 9f else 2f / 3f)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-        ) {
-            AsyncImage(
-                model = request,
-                contentDescription = item.name,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+    Box(modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+        AsyncImage(
+            model = request,
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
+
+/** A poster with its title underneath */
+@Composable
+fun PosterCard(item: SearchResponse, horizontal: Boolean, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    Column(
+        modifier
+            .width(if (horizontal) horizontalWidth else verticalWidth)
+            .then(if (onClick != null) Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onClick) else Modifier)
+    ) {
+        RemoteImage(
+            item.posterUrl,
+            item.posterHeaders,
+            contentDescription = item.name,
+            modifier = Modifier.fillMaxWidth().aspectRatio(if (horizontal) 16f / 9f else 2f / 3f),
+        )
         Text(
             item.name,
             style = MaterialTheme.typography.bodyMedium,
@@ -117,6 +127,7 @@ fun PosterRow(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     loading: Boolean = false,
+    onItemClick: ((SearchResponse) -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     Column(modifier.fillMaxWidth()) {
@@ -136,7 +147,7 @@ fun PosterRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // No keys, providers sometimes list the same item twice and duplicate keys crash the row
-            items(items) { PosterCard(it, horizontal) }
+            items(items) { item -> PosterCard(item, horizontal, onClick = onItemClick?.let { { it(item) } }) }
             if (trailing != null) item { trailing() }
         }
     }
