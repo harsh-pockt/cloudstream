@@ -9,6 +9,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import coil3.compose.setSingletonImageLoaderFactory
+import com.lagradost.cloudstream4.browse.desktopImageLoader
 import com.lagradost.cloudstream4.compose.LocalFocusOutlineDefault
 import com.lagradost.cloudstream4.generated.resources.Res
 import com.lagradost.cloudstream4.generated.resources.app_name
@@ -30,6 +32,7 @@ fun main() {
     @OptIn(DelicateCoroutinesApi::class)
     GlobalScope.launch(Dispatchers.IO) { DesktopPluginManager.instance.loadAll() }
     application {
+        setSingletonImageLoaderFactory(::desktopImageLoader)
         val savedWindow = remember { SavedWindowState(desktopPreferences) }
         val windowState = rememberSavedWindowState(savedWindow)
         val navigator = remember { AppNavigator() }

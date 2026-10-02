@@ -152,6 +152,11 @@ class ProviderPreferences(preferences: PreferenceStore) {
     val displayDubSub = preferences.getStringSet(
         "display_sub_key", defaultDub
     )
+
+    /** The provider shown on the home screen, by name. Android keeps this per account in its DataStore */
+    val homeProvider = preferences.getString(
+        "home_api_used", ""
+    )
 }
 
 class PlayerPreferences(preferences: PreferenceStore) {
