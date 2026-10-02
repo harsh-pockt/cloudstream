@@ -6,7 +6,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.window.WindowPlacement
+import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import coil3.compose.setSingletonImageLoaderFactory
@@ -47,6 +52,21 @@ fun main() {
             onPreviewKeyEvent = navigator::onKeyEvent,
         ) {
             MainContent(navigator)
+            FullscreenEffect(navigator, windowState)
+        }
+    }
+}
+
+/** Puts the window in full screen while the player asks for it, then back to how it was */
+@Composable
+private fun FullscreenEffect(navigator: AppNavigator, windowState: WindowState) {
+    var before by remember { mutableStateOf(windowState.placement) }
+    LaunchedEffect(navigator.fullscreen) {
+        if (navigator.fullscreen) {
+            before = windowState.placement
+            windowState.placement = WindowPlacement.Fullscreen
+        } else if (windowState.placement == WindowPlacement.Fullscreen) {
+            windowState.placement = before
         }
     }
 }

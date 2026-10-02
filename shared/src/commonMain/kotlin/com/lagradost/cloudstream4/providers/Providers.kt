@@ -4,17 +4,26 @@ import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.AllLanguagesName
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchQuality
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SearchResponseList
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.amap
+import com.lagradost.cloudstream3.fixUrl
 import com.lagradost.cloudstream3.mvvm.Resource
+import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.newSearchResponseList
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.workerDispatcher
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * The providers the user wants to see, the same rules as filterProviderByPreferredMedia in the
@@ -77,5 +86,44 @@ suspend fun MainAPI.mainPageSafely(page: Int): Resource<List<HomePageResponse?>>
         } else {
             requests.amap { getMainPage(page, it) }
         }
+    }
+}
+
+/** Providers use these as "nothing here", so they are never sent to load or loadLinks */
+private fun isInvalidData(data: String) = data.isEmpty() || data == "[]" || data == "about:blank"
+
+/** The details page of a search result or home page item */
+suspend fun MainAPI.loadSafely(url: String): Resource<LoadResponse> = safeApiCall {
+    withTimeout(providerTimeout(loadTimeoutMs)) {
+        if (isInvalidData(url)) throw ErrorLoadingException()
+        val response = load(fixUrl(url)) ?: throw ErrorLoadingException()
+        response.apply { tags = tags?.filter { it.isNotBlank() } }
+    }
+}
+
+/**
+ * Finds the video links for a movie or episode. Links and subtitles are passed on as soon as they
+ * are found, from worker threads. Returns false if the provider failed or ran out of time.
+ */
+suspend fun MainAPI.loadLinksSafely(
+    data: String,
+    onSubtitle: (SubtitleFile) -> Unit,
+    onLink: (ExtractorLink) -> Unit,
+): Boolean {
+    if (isInvalidData(data)) return false
+    return try {
+        withContext(workerDispatcher) {
+            withTimeout(providerTimeout(loadLinksTimeoutMs)) {
+                loadLinks(data, false, onSubtitle, onLink)
+            }
+        }
+    } catch (t: TimeoutCancellationException) {
+        logError(t)
+        false
+    } catch (t: Throwable) {
+        // Cancellation means the screen closed, which must reach the caller
+        if (t is CancellationException) throw t
+        logError(t)
+        false
     }
 }

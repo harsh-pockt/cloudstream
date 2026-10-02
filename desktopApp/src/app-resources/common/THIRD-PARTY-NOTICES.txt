@@ -1,0 +1,26 @@
+CloudStream for desktop includes third-party software
+=====================================================
+
+CloudStream is free software under the GNU General Public License version 3,
+see LICENSE.txt next to this file.
+
+libmpv (libmpv-2.dll)
+---------------------
+Plays video. libmpv-2.dll is built from mpv and the libraries it is compiled
+with, among them FFmpeg, libass, libplacebo, HarfBuzz, FreeType, dav1d and
+zlib. This build includes GPL-licensed parts, so libmpv-2.dll as a whole is
+distributed under the GNU General Public License, version 2 or later, which
+allows distribution under version 3 (LICENSE.txt).
+
+Build: mpv-dev-x86_64-20261002-git-3186d369f9 from
+https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20261002
+(mpv commit 3186d369f9). The build scripts and the exact versions of every
+library are in that repository at the same tag.
+
+Source code:
+  mpv                 https://github.com/mpv-player/mpv
+  Build scripts       https://github.com/shinchiro/mpv-winbuild-cmake
+  FFmpeg              https://ffmpeg.org/download.html
+
+The complete corresponding source code of libmpv-2.dll is also published
+with each CloudStream desktop release on GitHub, next to the installer.

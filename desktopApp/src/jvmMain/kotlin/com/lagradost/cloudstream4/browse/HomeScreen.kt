@@ -39,7 +39,7 @@ import org.jetbrains.compose.resources.painterResource
 
 /** The home page of one provider, picked from a menu at the top */
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, openExtensions: () -> Unit) {
+fun HomeScreen(viewModel: HomeViewModel, openExtensions: () -> Unit, openDetails: (apiName: String, url: String) -> Unit) {
     val state by viewModel.state.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
@@ -69,6 +69,7 @@ fun HomeScreen(viewModel: HomeViewModel, openExtensions: () -> Unit) {
                             items = row.items,
                             horizontal = row.horizontalImages,
                             modifier = Modifier.padding(top = 8.dp),
+                            onItemClick = { openDetails(it.apiName, it.url) },
                         )
                     }
                 }

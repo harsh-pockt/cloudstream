@@ -43,7 +43,7 @@ import org.jetbrains.compose.resources.stringResource
  * advanced search, and each provider's row appears as soon as it answers.
  */
 @Composable
-fun SearchScreen(viewModel: SearchViewModel, openExtensions: () -> Unit) {
+fun SearchScreen(viewModel: SearchViewModel, openExtensions: () -> Unit, openDetails: (apiName: String, url: String) -> Unit) {
     val state by viewModel.state.collectAsState()
     val focus = remember { FocusRequester() }
     // Opening Search puts the cursor in the box, ready to type
@@ -104,6 +104,7 @@ fun SearchScreen(viewModel: SearchViewModel, openExtensions: () -> Unit) {
                         items = row.items,
                         horizontal = false,
                         modifier = Modifier.padding(top = 8.dp),
+                        onItemClick = { openDetails(it.apiName, it.url) },
                         trailing = if (row.hasNext) {
                             { MoreButton(loading, horizontal = false) { viewModel.onAction(SearchAction.LoadMore(row.apiName)) } }
                         } else null,
