@@ -18,6 +18,7 @@ import com.lagradost.cloudstream4.home.HomeViewModel
 import com.lagradost.cloudstream4.plugins.DesktopPluginManager
 import com.lagradost.cloudstream4.plugins.RepositoryClient
 import com.lagradost.cloudstream4.providers.filterProviders
+import com.lagradost.cloudstream4.search.InMemorySearchHistory
 import com.lagradost.cloudstream4.search.ProviderStatus
 import com.lagradost.cloudstream4.search.SearchAction
 import com.lagradost.cloudstream4.search.SearchViewModel
@@ -162,6 +163,34 @@ class BrowseViewModelTest {
 
         val state = awaitState(vm.state) { !it.isSearching }
         assertEquals(listOf("Slow new 1", "Slow cam 1"), state.results.single().items.map { it.name })
+    }
+
+    @Test
+    fun searchesAreRememberedNewestFirstAndCanBeRunAgain() {
+        var now = 0L
+        val history = InMemorySearchHistory { ++now }
+        val provider = FakeProvider("P")
+        val vm = SearchViewModel({ listOf(provider) }, settings, history)
+
+        listOf("dune", "x", "alien", "dune").forEach {
+            vm.onAction(SearchAction.QueryChanged(it))
+            vm.onAction(SearchAction.Submit)
+        }
+        // One letter is not saved, and searching "dune" again moves it to the top
+        assertEquals(listOf("dune", "alien"), vm.state.value.history.map { it.query })
+
+        vm.onAction(SearchAction.Clear)
+        assertEquals(listOf("dune", "alien"), vm.state.value.history.map { it.query }, "clearing the box keeps the history")
+
+        vm.onAction(SearchAction.SearchFor("alien"))
+        val state = awaitState(vm.state) { !it.isSearching && it.searchedQuery == "alien" }
+        assertEquals("alien", state.query)
+        assertEquals(listOf("alien", "dune"), state.history.map { it.query })
+
+        vm.onAction(SearchAction.RemoveHistory(state.history.first().key))
+        assertEquals(listOf("dune"), vm.state.value.history.map { it.query })
+        vm.onAction(SearchAction.ClearHistory)
+        assertTrue(vm.state.value.history.isEmpty())
     }
 
     @Test
