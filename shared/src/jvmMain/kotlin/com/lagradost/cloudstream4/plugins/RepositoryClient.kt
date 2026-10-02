@@ -36,13 +36,23 @@ data class RepoPlugin(
     val language: String?,
     val tvTypes: List<String>,
     val iconUrl: String?,
-    /** Only set when the plugin is built with `isCrossPlatform = true`, which desktop needs */
+    /** Only set when the plugin is built with `isCrossPlatform = true` */
     val jarUrl: String?,
     /** "sha256-<hex>" */
     val jarHash: String?,
     val jarFileSize: Long?,
+    /** The Android version (.cs3), which desktop converts when there is no jar */
+    val androidUrl: String? = null,
+    val androidHash: String? = null,
+    val androidFileSize: Long? = null,
 ) {
+    /** Built for desktop too, so it runs as it is */
     val supportsDesktop: Boolean get() = jarUrl != null
+
+    /** Only built for Android, so it is converted on install */
+    val needsConversion: Boolean get() = jarUrl == null && androidUrl != null
+
+    val canInstall: Boolean get() = supportsDesktop || needsConversion
 }
 
 class PluginDownloadException(message: String) : Exception(message)
@@ -125,20 +135,31 @@ class RepositoryClient(
     /** Downloads the plugin jar and checks its size and hash against the repository */
     suspend fun downloadJar(plugin: RepoPlugin): ByteArray {
         val url = plugin.jarUrl ?: throw PluginDownloadException("${plugin.name} has no desktop version")
-        val bytes = getBytes(url)
-        plugin.jarFileSize?.let { expected ->
+        return getBytes(url).also { verify(plugin, it, plugin.jarFileSize, plugin.jarHash) }
+    }
+
+    /**
+     * Downloads the plugin's Android version (.cs3) and checks its hash when the repository lists one.
+     * The size is not checked, because the Android app only shows it and repositories do not keep it exact.
+     */
+    suspend fun downloadAndroidPlugin(plugin: RepoPlugin): ByteArray {
+        val url = plugin.androidUrl ?: throw PluginDownloadException("${plugin.name} has no Android version")
+        return getBytes(url).also { verify(plugin, it, size = null, hash = plugin.androidHash) }
+    }
+
+    private fun verify(plugin: RepoPlugin, bytes: ByteArray, size: Long?, hash: String?) {
+        size?.let { expected ->
             if (bytes.size.toLong() != expected) {
                 throw PluginDownloadException("${plugin.name}: expected $expected bytes, got ${bytes.size}")
             }
         }
-        plugin.jarHash?.let { expected ->
+        hash?.let { expected ->
             val actual = "sha256-" + MessageDigest.getInstance("SHA-256").digest(bytes)
                 .joinToString("") { "%02x".format(it) }
             if (!actual.equals(expected, ignoreCase = true)) {
                 throw PluginDownloadException("${plugin.name}: the download does not match the repository's hash")
             }
         }
-        return bytes
     }
 
     private suspend fun getText(url: String): String = getBytes(url).decodeToString()
@@ -182,6 +203,9 @@ class RepositoryClient(
                     jarUrl = obj.string("jarUrl"),
                     jarHash = obj.string("jarHash"),
                     jarFileSize = obj.primitive("jarFileSize")?.longOrNull,
+                    androidUrl = obj.string("url"),
+                    androidHash = obj.string("fileHash"),
+                    androidFileSize = obj.primitive("fileSize")?.longOrNull,
                 )
             }
 

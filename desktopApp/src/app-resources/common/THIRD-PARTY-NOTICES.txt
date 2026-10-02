@@ -24,3 +24,15 @@ Source code:
 
 The complete corresponding source code of libmpv-2.dll is also published
 with each CloudStream desktop release on GitHub, next to the installer.
+
+Android extension support
+-------------------------
+Extensions built only for Android are converted for desktop with these
+libraries, which are included as they are:
+
+  dex2jar 2.4.38      Apache License 2.0
+                      https://github.com/ThexXTURBOXx/dex2jar
+                      Includes code from the Android Open Source Project
+                      (dx), Apache License 2.0
+  ASM 9.10.1          BSD 3-Clause License, https://asm.ow2.io
+  Gson 2.14.0         Apache License 2.0, https://github.com/google/gson

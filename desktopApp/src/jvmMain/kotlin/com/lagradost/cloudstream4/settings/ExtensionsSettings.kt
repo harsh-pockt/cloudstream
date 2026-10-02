@@ -24,7 +24,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.unit.dp
+import coil3.compose.rememberAsyncImagePainter
+import com.lagradost.cloudstream3.plugins.Plugin
+import com.lagradost.cloudstream3.utils.SubtitleHelper
 import com.lagradost.cloudstream4.desktopPreferences
 import com.lagradost.cloudstream4.generated.resources.*
 import com.lagradost.cloudstream4.plugins.DesktopPluginManager
@@ -46,6 +50,29 @@ import org.jetbrains.compose.resources.stringResource
 private val repositories = desktopPreferences.getStringSet("desktop_repositories", emptySet())
 
 private val client = RepositoryClient()
+
+/** The name as the Android app shows it, which leaves out the "Provider" most names end with */
+private fun displayName(name: String) = name.removeSuffix("Provider")
+
+/** The extension's icon from its repository, or the extension icon when it has none or it fails to load */
+@Composable
+private fun extensionIcon(iconUrl: String?): Painter {
+    val fallback = painterResource(Res.drawable.extension_24px)
+    if (iconUrl.isNullOrBlank()) return fallback
+    // The same sizes the Android app asks for
+    val url = iconUrl.replace("%size%", "64").replace("%exact_size%", "64")
+    return rememberAsyncImagePainter(url, placeholder = fallback, error = fallback, fallback = fallback)
+}
+
+/** Windows draws no flag emoji, so the language is shown by name rather than with Android's flag */
+private fun languageName(code: String?): String? =
+    code?.takeIf { it.isNotBlank() }?.let { SubtitleHelper.fromTagToEnglishLanguageName(it) ?: it.uppercase() }
+
+private fun fileSize(bytes: Long?): String? = when {
+    bytes == null -> null
+    bytes < 1024 * 1024 -> "${(bytes + 1023) / 1024} KB"
+    else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+}
 
 /** Adds every repository in the community list, which is what MegaRepo does on Android. Returns how many were new */
 private suspend fun addCommunityRepositories(): Int {
@@ -71,7 +98,10 @@ private suspend fun addRepository(input: String): String {
     return "Added ${url.removePrefix("https://")}"
 }
 
-/** Repositories and installed extensions. Only plugins built with `isCrossPlatform = true` can run on desktop */
+/**
+ * Repositories and installed extensions. Extensions built with `isCrossPlatform = true` run as they
+ * are, the others are converted from their Android build when they are installed.
+ */
 class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : SearchableSettings {
     @Composable
     override fun getTitleRes(): String = "Extensions"
@@ -82,6 +112,7 @@ class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : Searcha
         val repos by repositories.collectAsState()
         val installed by manager.installed.collectAsState()
         val errors by manager.errors.collectAsState()
+        val loadedNames by manager.loadedNames.collectAsState()
         val scope = rememberCoroutineScope()
         val busy = remember { mutableStateMapOf<String, Boolean>() }
 
@@ -159,9 +190,21 @@ class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : Searcha
 
         val installedItems = installed.sortedBy { it.name.lowercase() }.map { plugin ->
             val error = errors[plugin.internalName]
+            val loaded = if (plugin.internalName in loadedNames) manager.loadedPlugin(plugin.internalName) else null
+            val providers = loaded?.providers?.size ?: 0
             Preference.PreferenceItem.TextPreference(
-                title = plugin.name,
-                subtitle = error?.let { "Failed to load: $it" } ?: "Version ${plugin.version}",
+                title = displayName(plugin.name),
+                icon = extensionIcon(plugin.iconUrl),
+                subtitle = error?.let { "Failed to load: $it" } ?: listOfNotNull(
+                    "Version ${plugin.version}",
+                    "Android build, converted for desktop".takeIf { plugin.isAndroid },
+                    when (providers) {
+                        0 -> null
+                        1 -> "1 provider"
+                        else -> "$providers providers"
+                    },
+                    "Its settings screen needs Android".takeIf { (loaded?.instance as? Plugin)?.openSettings != null },
+                ).joinToString(" · "),
                 widget = {
                     BusyOr(busy[plugin.internalName] == true) {
                         OutlinedButton(onClick = {
@@ -231,68 +274,77 @@ class RepositoryScreen(private val url: String) : SearchableSettings {
             is State.Loaded -> if (current.plugins.any { it.internalName == RepositoryClient.MEGA_REPO_PLUGIN }) {
                 listOf(megaRepoGroup(scope))
             } else {
-                val (desktop, androidOnly) = current.plugins.sortedBy { it.name.lowercase() }.partition { it.supportsDesktop }
+                val sorted = current.plugins.sortedBy { it.name.lowercase() }
+                val desktop = sorted.filter { it.supportsDesktop }
+                val android = sorted.filter { it.needsConversion }
+                val unavailable = sorted.filterNot { it.canInstall }
+
+                @Composable
+                fun row(plugin: RepoPlugin): Preference.PreferenceItem<*, *> {
+                    val installedVersion = installed.firstOrNull { it.internalName == plugin.internalName }?.version
+                    return Preference.PreferenceItem.TextPreference(
+                        // Like Android, a provider that is down says so in its name
+                        title = displayName(plugin.name) + if (plugin.status == 0) " (disabled)" else "",
+                        icon = extensionIcon(plugin.iconUrl),
+                        subtitle = failures[plugin.internalName]
+                            ?: listOfNotNull(
+                                plugin.description,
+                                languageName(plugin.language),
+                                "v${plugin.version}",
+                                fileSize(if (plugin.supportsDesktop) plugin.jarFileSize else plugin.androidFileSize),
+                            ).joinToString(" · "),
+                        widget = {
+                            BusyOr(busy[plugin.internalName] == true, label = "Converting".takeIf { plugin.needsConversion }) {
+                                fun run(action: suspend () -> Unit) {
+                                    busy[plugin.internalName] = true
+                                    failures.remove(plugin.internalName)
+                                    scope.launch {
+                                        runCatching { action() }.onFailure {
+                                            failures[plugin.internalName] = "Failed: ${it.message ?: it}"
+                                        }
+                                        busy.remove(plugin.internalName)
+                                    }
+                                }
+                                when {
+                                    installedVersion == null -> Button(onClick = {
+                                        run { manager.install(url, plugin) }
+                                    }) { Text("Install") }
+
+                                    installedVersion < plugin.version -> Button(onClick = {
+                                        run { manager.install(url, plugin) }
+                                    }) { Text("Update") }
+
+                                    else -> OutlinedButton(onClick = {
+                                        run { manager.uninstall(plugin.internalName) }
+                                    }) { Text("Uninstall") }
+                                }
+                            }
+                        },
+                    )
+                }
+
                 // Product Sans draws "(5)" as a circled digit, so counts use a separator instead of parentheses
                 listOfNotNull(
-                    Preference.PreferenceGroup(
-                        title = "Available on desktop · ${desktop.size}",
-                        preferenceItems = if (desktop.isEmpty()) listOf(
-                            Preference.PreferenceItem.InfoPreference(
-                                "Nothing in this repository runs on desktop yet. All ${androidOnly.size} of its " +
-                                        "extensions are Android only, see below."
-                            )
-                        ) else desktop.map { plugin ->
-                            val installedVersion = installed.firstOrNull { it.internalName == plugin.internalName }?.version
-                            Preference.PreferenceItem.TextPreference(
-                                title = plugin.name,
-                                subtitle = failures[plugin.internalName]
-                                    ?: listOfNotNull(
-                                        plugin.description,
-                                        plugin.language?.uppercase(),
-                                        "v${plugin.version}",
-                                        "Down".takeIf { plugin.status == 0 },
-                                    ).joinToString(" · "),
-                                widget = {
-                                    BusyOr(busy[plugin.internalName] == true) {
-                                        fun run(action: suspend () -> Unit) {
-                                            busy[plugin.internalName] = true
-                                            failures.remove(plugin.internalName)
-                                            scope.launch {
-                                                runCatching { action() }.onFailure {
-                                                    failures[plugin.internalName] = "Failed: ${it.message ?: it}"
-                                                }
-                                                busy.remove(plugin.internalName)
-                                            }
-                                        }
-                                        when {
-                                            installedVersion == null -> Button(onClick = {
-                                                run { manager.install(url, plugin) }
-                                            }) { Text("Install") }
-
-                                            installedVersion < plugin.version -> Button(onClick = {
-                                                run { manager.install(url, plugin) }
-                                            }) { Text("Update") }
-
-                                            else -> OutlinedButton(onClick = {
-                                                run { manager.uninstall(plugin.internalName) }
-                                            }) { Text("Uninstall") }
-                                        }
-                                    }
-                                },
-                            )
-                        },
+                    if (desktop.isEmpty()) null else Preference.PreferenceGroup(
+                        title = "Desktop builds · ${desktop.size}",
+                        preferenceItems = desktop.map { row(it) },
                     ),
-                    if (androidOnly.isEmpty()) null else Preference.PreferenceGroup(
-                        title = "Android only · ${androidOnly.size}",
+                    if (android.isEmpty()) null else Preference.PreferenceGroup(
+                        title = "Android builds · ${android.size}",
                         preferenceItems = listOf(
                             Preference.PreferenceItem.InfoPreference(
-                                "These extensions have no desktop build yet. Their authors can publish one by setting " +
-                                        "isCrossPlatform = true in the extension's build.gradle.kts."
+                                "These extensions were built for Android. Desktop converts them when you install " +
+                                        "them, which takes a few seconds. Searching and playing work for most; their " +
+                                        "settings screens and anything that needs Android's WebView do not."
                             )
-                        ) + androidOnly.map { plugin ->
+                        ) + android.map { row(it) },
+                    ),
+                    if (unavailable.isEmpty()) null else Preference.PreferenceGroup(
+                        title = "Unavailable · ${unavailable.size}",
+                        preferenceItems = unavailable.map { plugin ->
                             Preference.PreferenceItem.TextPreference(
-                                title = plugin.name,
-                                subtitle = plugin.description,
+                                title = displayName(plugin.name),
+                                subtitle = "The repository lists no file to install",
                                 enabled = false,
                             )
                         },
@@ -335,9 +387,12 @@ private fun megaRepoGroup(scope: CoroutineScope): Preference.PreferenceGroup {
 }
 
 @Composable
-private fun BusyOr(busy: Boolean, content: @Composable () -> Unit) {
+private fun BusyOr(busy: Boolean, label: String? = null, content: @Composable () -> Unit) {
     if (busy) {
-        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            label?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+        }
     } else {
         content()
     }

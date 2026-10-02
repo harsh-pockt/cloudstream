@@ -4,11 +4,13 @@ import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.utils.extractorApis
+import com.lagradost.cloudstream4.android.AndroidPluginClassLoader
+import com.lagradost.cloudstream4.android.DesktopAndroid
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.net.URLClassLoader
 import java.nio.file.Path
 import java.util.jar.JarFile
 
@@ -16,8 +18,11 @@ import java.util.jar.JarFile
 class LoadedPlugin internal constructor(
     val file: Path,
     val instance: BasePlugin,
-    private val classLoader: URLClassLoader,
+    private val classLoader: AndroidPluginClassLoader,
 ) {
+    /** Android classes the plugin used that desktop only has empty stubs of, so those parts do nothing */
+    val stubbedClasses: Set<String> get() = classLoader.stubbedClasses
+
     /** The providers this plugin registered when it loaded */
     val providers: List<MainAPI>
         get() = APIHolder.allProviders.withLock { APIHolder.allProviders.filter { it.sourcePlugin == instance.filename } }
@@ -37,16 +42,18 @@ class LoadedPlugin internal constructor(
 }
 
 /**
- * Loads the cross-platform .jar a plugin publishes when it is built with `isCrossPlatform = true`.
+ * Loads a plugin jar: the cross-platform .jar a plugin publishes when it is built with
+ * `isCrossPlatform = true`, or one converted from an Android plugin by DexConverter.
  *
- * Unlike the Android .cs3 file, the jar has no manifest.json, so the plugin class is the one
- * annotated with @CloudstreamPlugin. A manifest.json is still used if a jar has one.
+ * The cross-platform jar has no manifest.json, so the plugin class is the one annotated with
+ * @CloudstreamPlugin. A converted jar keeps the Android plugin's manifest.json, which is used first.
+ * Android plugins get load(context) with the desktop activity, like Android calls it with its activity.
  */
 object PluginLoader {
     private const val ANNOTATION_DESCRIPTOR = "Lcom/lagradost/cloudstream3/plugins/CloudstreamPlugin;"
 
     fun load(file: Path, parent: ClassLoader = PluginLoader::class.java.classLoader): LoadedPlugin {
-        val classLoader = URLClassLoader(arrayOf(file.toUri().toURL()), parent)
+        val classLoader = AndroidPluginClassLoader(file, parent)
         try {
             val className = findPluginClassName(file)
                 ?: throw IllegalArgumentException("No class annotated with @CloudstreamPlugin in $file")
@@ -58,7 +65,7 @@ object PluginLoader {
             instance.filename = file.toAbsolutePath().toString()
             val loaded = LoadedPlugin(file, instance, classLoader)
             try {
-                instance.load()
+                if (instance is Plugin) instance.load(DesktopAndroid.activity) else instance.load()
             } catch (t: Throwable) {
                 loaded.unload()
                 throw t

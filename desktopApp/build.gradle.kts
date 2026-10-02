@@ -109,7 +109,8 @@ compose.desktop {
             packageVersion = libs.versions.versionName.get()
 
             // The packaged runtime only contains these JDK modules, regenerate with ./gradlew :desktopApp:suggestRuntimeModules
-            modules("java.instrument", "java.management", "java.net.http", "java.sql", "jdk.dynalink", "jdk.unsupported")
+            // jdk.zipfs is used when converting Android extensions, which suggestRuntimeModules does not see
+            modules("java.instrument", "java.management", "java.net.http", "java.sql", "jdk.dynalink", "jdk.unsupported", "jdk.zipfs")
 
             val iconsRoot = project.file("src/desktop-icons")
             macOS {

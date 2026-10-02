@@ -50,6 +50,7 @@ kotlin {
         }
 
         jvmMain.dependencies {
+            api(project(":androidCompat"))
             implementation(libs.ktor.client.java)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.okhttp)
@@ -70,4 +71,8 @@ compose.resources {
     publicResClass = true
     packageOfResClass = "com.lagradost.cloudstream4.generated.resources"
     generateResClass = auto
+}
+// The Android extensions test converts and loads hundreds of extensions in one run
+tasks.withType<Test>().configureEach {
+    maxHeapSize = "3g"
 }
