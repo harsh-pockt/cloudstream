@@ -13,14 +13,22 @@ import com.lagradost.cloudstream4.compose.LocalFocusOutlineDefault
 import com.lagradost.cloudstream4.generated.resources.Res
 import com.lagradost.cloudstream4.generated.resources.app_name
 import com.lagradost.cloudstream4.generated.resources.default_icon
+import com.lagradost.cloudstream4.plugins.DesktopPluginManager
 import com.lagradost.cloudstream4.settings.desktopPrimaryColor
 import com.lagradost.cloudstream4.settings.desktopThemeMode
 import com.lagradost.cloudstream4.theme.CloudStreamTheme
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 
 fun main() {
     DesktopLog.install(AppDirs.logs)
+    // Plugins load in the background so a slow or broken plugin never delays the window
+    @OptIn(DelicateCoroutinesApi::class)
+    GlobalScope.launch(Dispatchers.IO) { DesktopPluginManager.instance.loadAll() }
     application {
         val savedWindow = remember { SavedWindowState(desktopPreferences) }
         val windowState = rememberSavedWindowState(savedWindow)

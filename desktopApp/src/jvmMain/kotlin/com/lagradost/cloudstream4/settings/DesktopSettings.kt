@@ -45,7 +45,8 @@ class SettingsHomeScreen(private val open: (SearchableSettings) -> Unit) : Searc
         category(SettingsGeneralScreen, Res.drawable.build_24px),
         category(SettingsPlayerScreen, Res.drawable.play_arrow_24px),
         category(SettingsLayoutScreen, Res.drawable.format_paint_24px),
-        category(SettingsProvidersScreen, Res.drawable.extension_24px),
+        category(SettingsProvidersScreen, Res.drawable.plugin_lang),
+        category(ExtensionsScreen(open), Res.drawable.extension_24px),
     )
 
     @Composable
