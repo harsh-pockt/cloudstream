@@ -47,7 +47,7 @@ class SettingsHomeScreen(private val open: (SearchableSettings) -> Unit) : Searc
         category(SettingsLayoutScreen, Res.drawable.format_paint_24px),
         category(SettingsProvidersScreen, Res.drawable.plugin_lang),
         category(ExtensionsScreen(open), Res.drawable.extension_24px),
-    )
+    ) + maintenanceCategories(open)
 
     @Composable
     private fun category(screen: SearchableSettings, icon: org.jetbrains.compose.resources.DrawableResource) =

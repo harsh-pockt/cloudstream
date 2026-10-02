@@ -32,6 +32,7 @@ import com.lagradost.cloudstream3.utils.SubtitleHelper
 import com.lagradost.cloudstream4.desktopPreferences
 import com.lagradost.cloudstream4.generated.resources.*
 import com.lagradost.cloudstream4.plugins.DesktopPluginManager
+import com.lagradost.cloudstream4.plugins.PluginUpdate
 import com.lagradost.cloudstream4.plugins.RepoPlugin
 import com.lagradost.cloudstream4.plugins.Repository
 import com.lagradost.cloudstream4.plugins.RepositoryClient
@@ -42,6 +43,9 @@ import com.mihon.presentation.settings.SearchableSettings
 import com.mihon.presentation.settings.collectAsState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
@@ -49,7 +53,33 @@ import org.jetbrains.compose.resources.stringResource
 /** Repository URLs the user added, kept separate from the Android REPOSITORIES_KEY data store */
 private val repositories = desktopPreferences.getStringSet("desktop_repositories", emptySet())
 
+/** Repository names from their repo.json, as "url<tab>name", so the list shows them without loading every repository */
+private val repositoryNames = desktopPreferences.getStringSet("desktop_repository_names", emptySet())
+
+/** Updates installed extensions when the app starts, like the Android app's automatic extension updates */
+val autoUpdateExtensions = desktopPreferences.getBoolean("desktop_auto_update_extensions", true)
+
 private val client = RepositoryClient()
+
+private fun knownNames(entries: Set<String>): Map<String, String> = entries.mapNotNull { entry ->
+    entry.split('\t', limit = 2).takeIf { it.size == 2 && it[1].isNotBlank() }?.let { it[0] to it[1] }
+}.toMap()
+
+private fun rememberRepositoryName(url: String, name: String) {
+    if (name.isBlank() || name == url) return
+    val entry = "$url\t$name"
+    val current = repositoryNames.get()
+    if (entry in current) return
+    repositoryNames.set(current.filterNot { it.startsWith("$url\t") }.toSet() + entry)
+}
+
+/** Until its repo.json is read, a GitHub repository is shown as "Repo (owner)" rather than the raw URL */
+private fun nameFromUrl(url: String): String {
+    val parts = url.removePrefix("https://").removePrefix("http://").split('/')
+    return if (parts.firstOrNull() == "raw.githubusercontent.com" && parts.size >= 3) "${parts[2]} (${parts[1]})" else shortUrl(url)
+}
+
+private fun shortUrl(url: String) = url.removePrefix("https://").removePrefix("http://").removePrefix("raw.githubusercontent.com/")
 
 /** The name as the Android app shows it, which leaves out the "Provider" most names end with */
 private fun displayName(name: String) = name.removeSuffix("Provider")
@@ -89,18 +119,21 @@ private suspend fun addCommunityRepositories(): Int {
  */
 private suspend fun addRepository(input: String): String {
     val url = client.resolveRepositoryUrl(input) ?: return "No repository found for \"${input.trim()}\""
-    val plugins = client.fetchPlugins(client.fetchRepository(url))
+    val repository = client.fetchRepository(url)
+    val plugins = client.fetchPlugins(repository)
     if (plugins.isNotEmpty() && plugins.all { it.internalName == RepositoryClient.MEGA_REPO_PLUGIN }) {
         val added = addCommunityRepositories()
         return "MegaRepo: added $added community repositories" + if (added == 0) ", you already had them all" else ""
     }
+    rememberRepositoryName(url, repository.name)
     repositories += url
-    return "Added ${url.removePrefix("https://")}"
+    return "Added ${repository.name.takeIf { it != url } ?: shortUrl(url)}"
 }
 
 /**
- * Repositories and installed extensions. Extensions built with `isCrossPlatform = true` run as they
- * are, the others are converted from their Android build when they are installed.
+ * Extensions, as a menu of its three pages: repositories, installed extensions and adding a
+ * repository. Extensions built with `isCrossPlatform = true` run as they are, the others are
+ * converted from their Android build when they are installed.
  */
 class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : SearchableSettings {
     @Composable
@@ -108,24 +141,90 @@ class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : Searcha
 
     @Composable
     override fun getPreferences(): List<Preference> {
-        val manager = DesktopPluginManager.instance
         val repos by repositories.collectAsState()
-        val installed by manager.installed.collectAsState()
-        val errors by manager.errors.collectAsState()
-        val loadedNames by manager.loadedNames.collectAsState()
-        val scope = rememberCoroutineScope()
-        val busy = remember { mutableStateMapOf<String, Boolean>() }
-
-        val repoItems = repos.sorted().map { url ->
+        val installed by DesktopPluginManager.instance.installed.collectAsState()
+        val errors by DesktopPluginManager.instance.errors.collectAsState()
+        val icon = painterResource(Res.drawable.extension_24px)
+        return listOf(
             Preference.PreferenceItem.TextPreference(
-                title = url.removePrefix("https://").removePrefix("raw.githubusercontent.com/"),
-                subtitle = if (url == RepositoryClient.OFFICIAL_REPOSITORY) "Official repository" else url,
-                icon = painterResource(Res.drawable.extension_24px),
-                onClick = { open(RepositoryScreen(url)) },
-                widget = { TextButton(onClick = { repositories -= url }) { Text("Remove") } },
-            )
+                title = "Repositories",
+                subtitle = when (repos.size) {
+                    0 -> "None added yet"
+                    1 -> "1 repository"
+                    else -> "${repos.size} repositories"
+                },
+                icon = icon,
+                onClick = { open(RepositoriesScreen(open)) },
+            ),
+            Preference.PreferenceItem.TextPreference(
+                title = "Installed extensions",
+                subtitle = listOfNotNull(
+                    if (installed.isEmpty()) "None installed yet" else "${installed.size} installed",
+                    errors.size.takeIf { it > 0 }?.let { "$it failed to load" },
+                ).joinToString(" · "),
+                icon = painterResource(Res.drawable.build_24px),
+                onClick = { open(InstalledExtensionsScreen) },
+            ),
+            Preference.PreferenceItem.TextPreference(
+                title = "Add repository",
+                subtitle = "A URL, a short code such as megarepo, or all community repositories",
+                icon = painterResource(Res.drawable.ic_baseline_add_24),
+                onClick = { open(AddRepositoryScreen) },
+            ),
+        )
+    }
+}
+
+/** The repositories the user added, by name. Opening one lists its extensions */
+class RepositoriesScreen(private val open: (SearchableSettings) -> Unit) : SearchableSettings {
+    @Composable
+    override fun getTitleRes(): String = "Repositories"
+
+    @Composable
+    override fun getPreferences(): List<Preference> {
+        val repos by repositories.collectAsState()
+        val names by repositoryNames.collectAsState()
+        val known = knownNames(names)
+
+        // Reads the names not known yet, a repository that fails to load keeps its name from the URL
+        LaunchedEffect(repos) {
+            val missing = repos.filter { it !in knownNames(repositoryNames.get()) }
+            coroutineScope {
+                missing.map { url ->
+                    async { runCatching { client.fetchRepository(url) }.getOrNull()?.let { rememberRepositoryName(url, it.name) } }
+                }.awaitAll()
+            }
         }
 
+        if (repos.isEmpty()) return listOf(
+            Preference.PreferenceItem.InfoPreference("No repositories yet. Add one, or type megarepo to add all community repositories."),
+            Preference.PreferenceItem.TextPreference(title = "Add repository", onClick = { open(AddRepositoryScreen) }),
+        )
+
+        val items = repos.map { url -> url to (known[url] ?: nameFromUrl(url)) }
+            .sortedBy { it.second.lowercase() }
+            .map { (url, name) ->
+                Preference.PreferenceItem.TextPreference(
+                    title = name,
+                    subtitle = if (url == RepositoryClient.OFFICIAL_REPOSITORY) "Official repository · ${shortUrl(url)}" else shortUrl(url),
+                    icon = painterResource(Res.drawable.extension_24px),
+                    onClick = { open(RepositoryScreen(url)) },
+                    widget = { TextButton(onClick = { repositories -= url }) { Text("Remove") } },
+                )
+            }
+        return listOf(Preference.PreferenceGroup(title = "Repositories · ${repos.size}", preferenceItems = items))
+    }
+}
+
+/** Adding a repository by URL or short code, or the official or all community repositories */
+object AddRepositoryScreen : SearchableSettings {
+    @Composable
+    override fun getTitleRes(): String = "Add repository"
+
+    @Composable
+    override fun getPreferences(): List<Preference> {
+        val repos by repositories.collectAsState()
+        val scope = rememberCoroutineScope()
         val addRepository = Preference.PreferenceItem.CustomPreference(title = "Add repository") {
             var text by remember { mutableStateOf("") }
             var adding by remember { mutableStateOf(false) }
@@ -187,16 +286,100 @@ class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : Searcha
                 }
             }
         }
+        return listOf(addRepository)
+    }
+}
 
-        val installedItems = installed.sortedBy { it.name.lowercase() }.map { plugin ->
+/** Installed extensions, with their status, updates and uninstall */
+object InstalledExtensionsScreen : SearchableSettings {
+    private sealed interface Check {
+        data object NotChecked : Check
+        data object Checking : Check
+        data class Done(val updates: List<PluginUpdate>, val message: String? = null) : Check
+    }
+
+    private var check by mutableStateOf<Check>(Check.NotChecked)
+
+    @Composable
+    override fun getTitleRes(): String = "Installed extensions"
+
+    @Composable
+    override fun getPreferences(): List<Preference> {
+        val manager = DesktopPluginManager.instance
+        val installed by manager.installed.collectAsState()
+        val errors by manager.errors.collectAsState()
+        val loadedNames by manager.loadedNames.collectAsState()
+        val scope = rememberCoroutineScope()
+        val busy = remember { mutableStateMapOf<String, Boolean>() }
+
+        fun checkForUpdates() {
+            check = Check.Checking
+            scope.launch {
+                check = runCatching { Check.Done(manager.findUpdates()) }
+                    .getOrElse { Check.Done(emptyList(), "Could not check: ${it.message ?: it}") }
+            }
+        }
+
+        LaunchedEffect(Unit) { if (check == Check.NotChecked && installed.isNotEmpty()) checkForUpdates() }
+        val updates = (check as? Check.Done)?.updates.orEmpty()
+            // An update that was installed since the check is no longer one
+            .filter { update -> installed.any { it.internalName == update.installed.internalName && it.version < update.available.version } }
+
+        val updatesGroup = Preference.PreferenceGroup(
+            title = "Updates",
+            preferenceItems = listOf(
+                Preference.PreferenceItem.SwitchPreference(
+                    preference = autoUpdateExtensions,
+                    title = "Update extensions automatically",
+                    subtitle = "Installs new versions of your extensions when the app starts",
+                ),
+                Preference.PreferenceItem.CustomPreference("Check for updates") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        val current = check
+                        Text(
+                            when {
+                                current is Check.Checking -> "Checking your extensions' repositories"
+                                current is Check.Done && current.message != null -> current.message
+                                current is Check.Done && updates.isEmpty() -> "All extensions are up to date"
+                                current is Check.Done -> if (updates.size == 1) "1 update available" else "${updates.size} updates available"
+                                else -> "Not checked yet"
+                            },
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        BusyOr(current is Check.Checking || busy["all"] == true, label = "Updating".takeIf { busy["all"] == true }) {
+                            if (updates.isNotEmpty()) {
+                                Button(onClick = {
+                                    busy["all"] = true
+                                    scope.launch {
+                                        val failed = manager.installUpdates(updates)
+                                        check = Check.Done(emptyList(), if (failed.isEmpty()) "Updated ${updates.size}" else "${failed.size} could not update: ${failed.values.first()}")
+                                        busy.remove("all")
+                                    }
+                                }) { Text("Update all") }
+                            } else {
+                                OutlinedButton(enabled = installed.isNotEmpty(), onClick = ::checkForUpdates) { Text("Check now") }
+                            }
+                        }
+                    }
+                },
+            ),
+        )
+
+        val items = installed.sortedBy { displayName(it.name).lowercase() }.map { plugin ->
             val error = errors[plugin.internalName]
             val loaded = if (plugin.internalName in loadedNames) manager.loadedPlugin(plugin.internalName) else null
             val providers = loaded?.providers?.size ?: 0
+            val update = updates.firstOrNull { it.installed.internalName == plugin.internalName }
             Preference.PreferenceItem.TextPreference(
                 title = displayName(plugin.name),
                 icon = extensionIcon(plugin.iconUrl),
                 subtitle = error?.let { "Failed to load: $it" } ?: listOfNotNull(
-                    "Version ${plugin.version}",
+                    "Version ${plugin.version}" + (update?.let { " · version ${it.available.version} available" } ?: ""),
                     "Android build, converted for desktop".takeIf { plugin.isAndroid },
                     when (providers) {
                         0 -> null
@@ -207,23 +390,27 @@ class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : Searcha
                 ).joinToString(" · "),
                 widget = {
                     BusyOr(busy[plugin.internalName] == true) {
-                        OutlinedButton(onClick = {
+                        fun run(action: suspend () -> Unit) {
                             busy[plugin.internalName] = true
                             scope.launch {
-                                runCatching { manager.uninstall(plugin.internalName) }
+                                runCatching { action() }
                                 busy.remove(plugin.internalName)
                             }
-                        }) { Text("Uninstall") }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (update != null) Button(onClick = { run { manager.install(plugin.repositoryUrl, update.available) } }) { Text("Update") }
+                            OutlinedButton(onClick = { run { manager.uninstall(plugin.internalName) } }) { Text("Uninstall") }
+                        }
                     }
                 },
             )
         }
 
         return listOf(
-            Preference.PreferenceGroup(title = "Repositories", preferenceItems = repoItems + addRepository),
+            updatesGroup,
             Preference.PreferenceGroup(
-                title = "Installed",
-                preferenceItems = installedItems.ifEmpty {
+                title = "Installed · ${installed.size}",
+                preferenceItems = items.ifEmpty {
                     listOf(Preference.PreferenceItem.InfoPreference("No extensions installed yet. Open a repository to install some."))
                 },
             ),
@@ -256,6 +443,7 @@ class RepositoryScreen(private val url: String) : SearchableSettings {
             if (state is State.Loaded) return@LaunchedEffect
             state = try {
                 val repository = client.fetchRepository(url)
+                rememberRepositoryName(url, repository.name)
                 State.Loaded(repository, client.fetchPlugins(repository))
             } catch (e: CancellationException) {
                 throw e

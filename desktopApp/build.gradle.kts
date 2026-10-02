@@ -100,6 +100,8 @@ tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(as
 compose.desktop {
     application {
         mainClass = "com.lagradost.cloudstream4.MainKt"
+        // Read by AppVersion, for the update check
+        jvmArgs("-Dcloudstream.version=${libs.versions.versionName.get()}")
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "CloudStream"
