@@ -54,7 +54,15 @@ class DesktopPluginManager(
     private val _errors = MutableStateFlow<Map<String, String>>(emptyMap())
     val errors: StateFlow<Map<String, String>> = _errors.asStateFlow()
 
+    /** Internal names of the plugins that are loaded, changes whenever providers are added or removed */
+    private val _loadedNames = MutableStateFlow<Set<String>>(emptySet())
+    val loadedNames: StateFlow<Set<String>> = _loadedNames.asStateFlow()
+
     fun loadedPlugin(internalName: String): LoadedPlugin? = loaded[internalName]
+
+    private fun publishLoaded() {
+        _loadedNames.value = loaded.keys.toSet()
+    }
 
     private fun jarFile(internalName: String): Path = dir.resolve("$internalName.jar")
 
@@ -75,6 +83,7 @@ class DesktopPluginManager(
             withContext(Dispatchers.IO) {
                 dir.createDirectories()
                 loaded.remove(plugin.internalName)?.unload()
+                publishLoaded()
                 val target = jarFile(plugin.internalName)
                 val tmp = dir.resolve("${plugin.internalName}.jar.tmp")
                 tmp.writeBytes(bytes)
@@ -90,6 +99,7 @@ class DesktopPluginManager(
     suspend fun uninstall(internalName: String) = lock.withLock {
         withContext(Dispatchers.IO) {
             loaded.remove(internalName)?.unload()
+            publishLoaded()
             jarFile(internalName).deleteIfExists()
             writeIndex(_installed.value.filterNot { it.internalName == internalName })
             _errors.update { it - internalName }
@@ -102,6 +112,7 @@ class DesktopPluginManager(
         return try {
             if (!file.exists()) throw PluginDownloadException("$file is missing, install the plugin again")
             loaded[internalName] = PluginLoader.load(file)
+            publishLoaded()
             _errors.update { it - internalName }
             println("INFO DesktopPluginManager: Loaded $internalName")
             null

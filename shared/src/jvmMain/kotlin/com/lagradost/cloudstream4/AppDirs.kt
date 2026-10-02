@@ -28,4 +28,15 @@ object AppDirs {
 
     val settingsFile: Path get() = root.resolve("settings.json")
     val logs: Path get() = root.resolve("logs")
+
+    /** Files that can be thrown away, such as poster images. On Windows this is the local, not roaming, AppData */
+    val cache: Path by lazy {
+        val os = System.getProperty("os.name").orEmpty().lowercase()
+        val local = System.getenv("LOCALAPPDATA")
+        if (System.getProperty("cloudstream.home").isNullOrBlank() && os.contains("win") && local != null) {
+            Paths.get(local, APP_NAME, "cache")
+        } else {
+            root.resolve("cache")
+        }
+    }
 }

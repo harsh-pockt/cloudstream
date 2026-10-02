@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -31,7 +32,16 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream4.generated.resources.*
+import com.lagradost.cloudstream3.APIHolder
+import com.lagradost.cloudstream4.browse.HomeScreen
+import com.lagradost.cloudstream4.browse.SearchScreen
+import com.lagradost.cloudstream4.home.HomeAction
+import com.lagradost.cloudstream4.home.HomeViewModel
+import com.lagradost.cloudstream4.plugins.DesktopPluginManager
+import com.lagradost.cloudstream4.search.SearchViewModel
+import com.lagradost.cloudstream4.settings.ExtensionsScreen
 import com.lagradost.cloudstream4.settings.SettingsHomeScreen
+import kotlinx.coroutines.flow.combine
 import com.mihon.presentation.LocalBackPress
 import com.mihon.presentation.settings.SearchableSettings
 import org.jetbrains.compose.resources.DrawableResource
@@ -52,7 +62,7 @@ enum class Destination(
 
 /**
  * Navigation for the desktop app: a rail on the left and the selected destination on the right.
- * Ctrl+1 to Ctrl+4 switch destination, Escape or Alt+Left goes back.
+ * Ctrl+1 to Ctrl+4 switch destination, Ctrl+F opens Search, Escape or Alt+Left goes back.
  */
 class AppNavigator {
     var destination by mutableStateOf(Destination.Home)
@@ -71,6 +81,13 @@ class AppNavigator {
         settingsStack.add(page)
     }
 
+    /** Settings > Extensions, where plugins are installed */
+    fun openExtensions() {
+        destination = Destination.Settings
+        settingsStack.clear()
+        settingsStack.add(ExtensionsScreen(::open))
+    }
+
     /** Returns false when there is nothing to go back to */
     fun back(): Boolean {
         if (destination == Destination.Settings && settingsStack.isNotEmpty()) {
@@ -83,6 +100,10 @@ class AppNavigator {
     fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
         if (event.isCtrlPressed) {
+            if (event.key == Key.F) {
+                select(Destination.Search)
+                return true
+            }
             val index = listOf(Key.One, Key.Two, Key.Three, Key.Four).indexOf(event.key)
             if (index >= 0) {
                 select(Destination.entries[index])
@@ -94,8 +115,24 @@ class AppNavigator {
     }
 }
 
+/** All providers the loaded plugins registered */
+private fun loadedProviders() = APIHolder.apis.withLock { APIHolder.apis.toList() }
+
 @Composable
 fun AppShell(navigator: AppNavigator) {
+    val settings = rememberAppSettings()
+    // Kept for the whole session, so switching destination keeps the results
+    val home = remember { HomeViewModel(::loadedProviders, settings) }
+    val search = remember { SearchViewModel(::loadedProviders, settings) }
+    // Plugins load in the background after the window opens, and the provider settings can change at any time
+    LaunchedEffect(home) {
+        combine(
+            DesktopPluginManager.instance.loadedNames,
+            settings.provider.extensionLanguages.changes(),
+            settings.provider.preferredMedia.changes(),
+        ) { _, _, _ -> }.collect { home.onAction(HomeAction.ProvidersChanged) }
+    }
+
     Row(Modifier.fillMaxSize()) {
         NavigationRail(
             modifier = Modifier.fillMaxHeight(),
@@ -133,6 +170,8 @@ fun AppShell(navigator: AppNavigator) {
                     }
                 }
 
+                Destination.Home -> HomeScreen(home, navigator::openExtensions)
+                Destination.Search -> SearchScreen(search, navigator::openExtensions)
                 else -> ComingSoon(navigator.destination)
             }
         }
