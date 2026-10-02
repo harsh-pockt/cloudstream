@@ -59,7 +59,49 @@ class RepositoryClient(
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build(),
+    /** Where short codes such as "megarepo" are looked up, and "!code" ones. Changed by tests only */
+    private val shortLinkHost: String = "https://cutt.ly/",
+    private val bangShortLinkHost: String = "https://py.md/",
 ) {
+    /**
+     * Turns what the user typed into a repository URL, with the same rules as the Android app's
+     * RepositoryManager.parseRepoUrl: cloudstreamrepo:// and https://cs.repo/ links lose their prefix,
+     * a URL is kept, and a short code is looked up at cutt.ly (or py.md for "!code"), which redirects
+     * to the repository. Returns null when nothing is found.
+     */
+    suspend fun resolveRepositoryUrl(input: String): String? {
+        val text = input.trim()
+        // Before the URL check, which https://cs.repo/ links would otherwise pass unchanged
+        if (text.contains(DEEP_LINK_REGEX)) {
+            val rest = text.replace(DEEP_LINK_REGEX, "")
+            return if (rest.contains(URL_REGEX)) rest else "https://$rest"
+        }
+        if (text.contains(URL_REGEX)) return text
+        if (!text.matches(SHORT_CODE_REGEX)) return null
+        val (host, code) = if (text.startsWith("!")) bangShortLinkHost to text.removePrefix("!") else shortLinkHost to text
+        val location = withContext(Dispatchers.IO) {
+            val noRedirects = http.newBuilder().followRedirects(false).followSslRedirects(false).build()
+            noRedirects.newCall(Request.Builder().url(host + code).build()).execute().use { it.header("Location") }
+        } ?: return null
+        // The short link sites send unknown codes to their 404 page or their home page
+        val base = host.removeSuffix("/")
+        if (location.startsWith("$base/404") || location.removeSuffix("/") == base) return null
+        return location
+    }
+
+    /**
+     * The repositories in CloudStream's community list, the same list the MegaRepo plugin adds on
+     * Android. Entries are either a URL or an object with a "url".
+     */
+    suspend fun fetchCommunityRepositories(listUrl: String = COMMUNITY_REPOSITORIES): List<String> =
+        Json.parseToJsonElement(getText(listUrl)).jsonArray.mapNotNull { entry ->
+            when (entry) {
+                is JsonPrimitive -> entry.takeIf { it.isString }?.content
+                is JsonObject -> entry.string("url")
+                else -> null
+            }
+        }.distinct()
+
     suspend fun fetchRepository(url: String): Repository {
         val json = Json.parseToJsonElement(getText(url))
         // Some people share the plugin list directly instead of repo.json
@@ -110,6 +152,19 @@ class RepositoryClient(
 
     companion object {
         const val OFFICIAL_REPOSITORY = "https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json"
+
+        /** The community repository list, see https://github.com/recloudstream/cs-repos */
+        const val COMMUNITY_REPOSITORIES = "https://raw.githubusercontent.com/recloudstream/cs-repos/master/repos-db.json"
+
+        /**
+         * The internal name of MegaRepo's only plugin. On Android it adds every community repository and
+         * nothing else, through app internals desktop does not have, so desktop does that itself instead.
+         */
+        const val MEGA_REPO_PLUGIN = "MegaProvider"
+
+        private val URL_REGEX = "^https?://".toRegex()
+        private val DEEP_LINK_REGEX = """^(cloudstreamrepo://|https://cs\.repo/\??)""".toRegex()
+        private val SHORT_CODE_REGEX = "^[a-zA-Z0-9!_-]+$".toRegex()
 
         internal fun parsePluginList(text: String): List<RepoPlugin> =
             Json.parseToJsonElement(text).jsonArray.mapNotNull { element ->
