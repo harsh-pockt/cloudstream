@@ -1,6 +1,13 @@
 package com.lagradost.cloudstream4.player
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -19,7 +26,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,6 +43,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.SwingPanel
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -50,12 +67,18 @@ import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream4.browse.Message
 import com.lagradost.cloudstream4.browse.formatTime
 import com.lagradost.cloudstream4.generated.resources.Res
 import com.lagradost.cloudstream4.generated.resources.arrow_back
 import com.lagradost.cloudstream4.generated.resources.baseline_fullscreen_24
 import com.lagradost.cloudstream4.generated.resources.baseline_fullscreen_exit_24
+import com.lagradost.cloudstream4.generated.resources.ic_baseline_audiotrack_24
+import com.lagradost.cloudstream4.generated.resources.ic_baseline_hd_24
+import com.lagradost.cloudstream4.generated.resources.ic_baseline_replay_24
+import com.lagradost.cloudstream4.generated.resources.ic_baseline_speed_24
+import com.lagradost.cloudstream4.generated.resources.ic_baseline_subtitles_24
 import com.lagradost.cloudstream4.generated.resources.ic_baseline_volume_mute_24
 import com.lagradost.cloudstream4.generated.resources.ic_baseline_volume_up_24
 import com.lagradost.cloudstream4.generated.resources.pause_24px
@@ -64,6 +87,7 @@ import com.lagradost.cloudstream4.library.DataStoreWatchStore
 import com.lagradost.cloudstream4.library.saveProgress
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import java.io.File
 import kotlin.math.abs
@@ -79,8 +103,8 @@ private sealed interface SubtitleChoice {
 
 /**
  * Plays a movie or episode. The links load in the background and the best one starts on its own.
- * The bar on top switches source, subtitles, audio and speed; the bar below plays, seeks and sets
- * the volume. In full screen the bars show while the mouse moves and hide after a few seconds.
+ * The bar on top shows the title and source; the bar below plays, seeks, sets the volume and opens
+ * the subtitle, audio, speed and source pickers. In full screen the bars show while the mouse moves and hide after a few seconds.
  * Space pauses, the arrows seek and change volume, M mutes, F toggles full screen and Escape closes
  * an open panel or goes back. A click on the video closes an open panel, or pauses.
  */
@@ -119,10 +143,17 @@ fun PlayerScreen(
     }
     DisposableEffect(Unit) { onDispose { saveProgress() } }
 
+    // Seconds really played on the current link, and the last position seen, to tell a link that
+    // ends right after it starts (a broken file) from one watched to the end
+    val playedOnLink = remember { doubleArrayOf(0.0, -1.0) }
+    val currentState by rememberUpdatedState(state)
+
     // A new link was picked, by hand or because the last one failed. The subtitle picked stays on
     val selected = state.selectedLink
     LaunchedEffect(selected?.url) {
         if (selected == null) return@LaunchedEffect
+        playedOnLink[0] = 0.0
+        playedOnLink[1] = -1.0
         val choice = subtitleChoice
         val subtitles = state.subtitles.mapNotNull { sub ->
             downloaded[sub.url]?.let { MpvSubtitle(it, sub.lang, select = choice == SubtitleChoice.Extension(sub.url)) }
@@ -160,7 +191,14 @@ fun PlayerScreen(
                 MpvEvent.ToggleFullscreen -> currentFullscreen()
                 MpvEvent.Click -> if (panel != null) panel = null else player.togglePause()
                 is MpvEvent.Failed -> viewModel.onAction(LinksAction.Failed(event.url, event.message))
-                MpvEvent.Ended -> saveProgress(playedTo[1], playedTo[1])
+                MpvEvent.Ended -> {
+                    val url = currentState.selected
+                    // A file that stops within seconds of starting is broken: it must not count as watched
+                    // unless it was started in its last half minute
+                    val nearEnd = playedTo[1] > 0 && playedTo[0] >= playedTo[1] - 30_000
+                    if (playedOnLink[0] < 10 && !nearEnd && url != null) viewModel.onAction(LinksAction.Failed(url, "Stopped right after it started"))
+                    else saveProgress(playedTo[1], playedTo[1])
+                }
             }
         }
     }
@@ -168,13 +206,37 @@ fun PlayerScreen(
         var ticks = 0
         while (true) {
             status = player.status()
-            if (status.duration > 0 && status.position > 0) {
+            val last = playedOnLink[1]
+            if (last >= 0 && status.position > last && status.position - last < 2) playedOnLink[0] += status.position - last
+            playedOnLink[1] = status.position
+            // Only once the link really plays: a broken one can jump to its end, which is no progress
+            if (status.duration > 0 && status.position > 0 && playedOnLink[0] >= 3) {
                 playedTo[0] = (status.position * 1000).toLong()
                 playedTo[1] = (status.duration * 1000).toLong()
                 // Every 10 seconds
                 if (++ticks % 20 == 0) saveProgress()
             }
             delay(500)
+        }
+    }
+
+    // While links are found and the video opens or buffers, a spinner turns over the video
+    val indicator = when {
+        state.exhausted -> null
+        state.selected == null -> if (state.links.isEmpty()) "Finding links…" else "Finding links · ${state.links.size} found"
+        status.buffering -> status.bufferPercent?.takeIf { it in 1..99 }?.let { "Buffering $it%" } ?: "Loading…"
+        else -> null
+    }
+    val currentIndicator by rememberUpdatedState(indicator)
+    LaunchedEffect(player, indicator != null) {
+        if (indicator == null) {
+            player.overlay(null)
+            return@LaunchedEffect
+        }
+        var step = 0
+        while (true) {
+            currentIndicator?.let { player.overlay(spinnerAss(step++, it)) }
+            delay(80)
         }
     }
 
@@ -228,14 +290,18 @@ fun PlayerScreen(
             },
     ) {
         if (showBars) TopBar(
-            state = state,
-            status = status,
             title = listOfNotNull(viewModel.request.title, viewModel.request.episodeLabel).joinToString(" · "),
-            message = subtitleMessage,
-            panel = panel,
-            onPanel = { panel = it },
+            line = subtitleMessage ?: when {
+                state.exhausted && state.links.isEmpty() -> "No playable links found" +
+                        if (state.skipped > 0) " (${state.skipped} torrent or DRM links cannot play on desktop)" else ""
+                state.exhausted -> "None of the ${state.links.size} links could be played"
+                state.selected == null -> "Finding links… ${state.links.size} found"
+                else -> state.selectedLink?.let(LinksViewModel::label)
+            },
+            error = subtitleMessage != null || state.exhausted,
+            loading = state.loading,
             onBack = onBack,
-            onRetry = { viewModel.onAction(LinksAction.Retry) },
+            onRetry = if (state.exhausted) ({ viewModel.onAction(LinksAction.Retry) }) else null,
             modifier = closePanel,
         )
         // The video is a native window, so nothing can be drawn over it: panels open beside it
@@ -259,7 +325,17 @@ fun PlayerScreen(
                 onSpeed = player::setSpeed,
             )
         }
-        if (showBars) ControlBar(player, status, fullscreen, onToggleFullscreen, closePanel)
+        if (showBars) ControlBar(
+            player = player,
+            status = status,
+            state = state,
+            panel = panel,
+            subtitleOn = status.tracks.any { it.type == "sub" && it.selected },
+            fullscreen = fullscreen,
+            onPanel = { panel = it },
+            onToggleFullscreen = onToggleFullscreen,
+            modifier = closePanel,
+        )
     }
 }
 
@@ -283,132 +359,320 @@ private val speeds = listOf(0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
 
 private fun speedLabel(speed: Double) = "%s×".format(if (speed % 1.0 == 0.0) speed.toInt().toString() else speed.toString())
 
+/** The player is always dark, whatever the app's theme, like most video players */
+private object PlayerColors {
+    val bar = Color(0xFF111114)
+    val panel = Color(0xFF18181C)
+    val content = Color.White
+    val secondary = Color.White.copy(alpha = 0.68f)
+    val track = Color.White.copy(alpha = 0.22f)
+    val buffered = Color.White.copy(alpha = 0.42f)
+    val selected = Color.White.copy(alpha = 0.10f)
+}
+
+/** The app's accent, in the tone that reads on a dark background */
+@Composable
+private fun accent(): Color {
+    val scheme = MaterialTheme.colorScheme
+    // A light theme's primary is dark, its inverse is the light tone of the same colour
+    return if (scheme.background.luminance() > 0.5f) scheme.inversePrimary else scheme.primary
+}
+
+/**
+ * A spinner and a line of text, drawn by mpv over the video: twelve dots around a dim disc, the
+ * brightest one moving round as [step] grows.
+ */
+private fun spinnerAss(step: Int, text: String): String {
+    val cx = 640.0
+    val cy = 330.0
+    val lines = mutableListOf<String>()
+    // Dim disc behind, so the spinner reads on a bright frame
+    lines += "{\\an7\\pos(${cx - 56},${cy - 56})\\bord0\\shad0\\1c&H000000&\\1a&H70&\\p1}" + circle(56.0) + "{\\p0}"
+    for (i in 0 until 12) {
+        val angle = Math.toRadians(i * 30.0 - 90)
+        val x = cx + 30 * kotlin.math.cos(angle)
+        val y = cy + 30 * kotlin.math.sin(angle)
+        // The head is opaque, the dots behind it fade out
+        val age = ((step - i) % 12 + 12) % 12
+        val alpha = (age * 20).coerceAtMost(0xD0)
+        lines += "{\\an7\\pos(${x - 4.5},${y - 4.5})\\bord0\\shad0\\1c&HFFFFFF&\\1a&H%02X&\\p1}".format(alpha) + circle(4.5) + "{\\p0}"
+    }
+    lines += "{\\an8\\pos($cx,${cy + 70})\\fs24\\bord1.5\\shad0\\3c&H000000&\\1c&HFFFFFF&}" + text.replace("{", "(").replace("}", ")")
+    return lines.joinToString("\n")
+}
+
+/** An ASS drawing of a circle of radius [r], from 0,0 to 2r,2r */
+private fun circle(r: Double): String {
+    val k = r * 0.5523
+    fun n(v: Double) = "%.1f".format(java.util.Locale.ROOT, v)
+    return "m ${n(r)} 0 b ${n(r + k)} 0 ${n(2 * r)} ${n(r - k)} ${n(2 * r)} ${n(r)} " +
+        "b ${n(2 * r)} ${n(r + k)} ${n(r + k)} ${n(2 * r)} ${n(r)} ${n(2 * r)} " +
+        "b ${n(r - k)} ${n(2 * r)} 0 ${n(r + k)} 0 ${n(r)} " +
+        "b 0 ${n(r - k)} ${n(r - k)} 0 ${n(r)} 0"
+}
+
 @Composable
 private fun TopBar(
-    state: LinksState,
-    status: MpvStatus,
     title: String,
-    message: String?,
-    panel: Panel?,
-    onPanel: (Panel?) -> Unit,
+    line: String?,
+    error: Boolean,
+    loading: Boolean,
     onBack: () -> Unit,
-    onRetry: () -> Unit,
+    onRetry: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 8.dp, vertical = 4.dp),
+        modifier.fillMaxWidth().background(PlayerColors.bar).padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        IconButton(onClick = onBack) { Icon(painterResource(Res.drawable.arrow_back), contentDescription = "Back") }
+        IconButton(onClick = onBack) {
+            Icon(painterResource(Res.drawable.arrow_back), contentDescription = "Back", tint = PlayerColors.content)
+        }
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val line = message ?: when {
-                state.exhausted && state.links.isEmpty() -> "No playable links found" +
-                        if (state.skipped > 0) " (${state.skipped} torrent or DRM links cannot play on desktop)" else ""
-                state.exhausted -> "None of the ${state.links.size} links could be played"
-                state.selected == null -> "Finding links… ${state.links.size} found"
-                status.buffering -> "Buffering…"
-                else -> state.selectedLink?.let(LinksViewModel::label)
-            }
+            Text(title, style = MaterialTheme.typography.titleMedium, color = PlayerColors.content, maxLines = 1, overflow = TextOverflow.Ellipsis)
             line?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (error) MaterialTheme.colorScheme.error else PlayerColors.secondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
-        if (state.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-        if (state.exhausted) TextButton(onClick = onRetry) { Text("Try again") }
-
-        val audioTracks = status.tracks.count { it.type == "audio" }
-        Panel.entries.forEach { entry ->
-            val enabled = when (entry) {
-                Panel.Source -> state.links.isNotEmpty()
-                Panel.Subtitles -> state.subtitles.isNotEmpty() || status.tracks.any { it.type == "sub" }
-                Panel.Audio -> audioTracks > 1
-                Panel.Speed -> true
-            }
-            val label = when {
-                entry == Panel.Source && state.links.isNotEmpty() -> "Source · ${state.links.size}"
-                entry == Panel.Speed && status.speed != 1.0 -> "Speed · ${speedLabel(status.speed)}"
-                else -> entry.title
-            }
-            // The audio button only shows when there is a choice to make
-            if (entry != Panel.Audio || enabled) {
-                TextButton(onClick = { onPanel(if (panel == entry) null else entry) }, enabled = enabled) {
-                    Text((if (panel == entry) "▸ " else "") + label)
-                }
-            }
-        }
+        if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = PlayerColors.secondary)
+        if (onRetry != null) TextButton(onClick = onRetry) { Text("Try again", color = accent()) }
     }
 }
 
-/** Play and pause, the seek bar with the time, volume and full screen */
+/**
+ * The bar under the video: a seek bar across the top showing what is played and what is loaded,
+ * then play, skip, volume and the time on the left, and the pickers and full screen on the right.
+ */
 @Composable
-private fun ControlBar(player: MpvPlayer, status: MpvStatus, fullscreen: Boolean, onToggleFullscreen: () -> Unit, modifier: Modifier = Modifier) {
+private fun ControlBar(
+    player: MpvPlayer,
+    status: MpvStatus,
+    state: LinksState,
+    panel: Panel?,
+    subtitleOn: Boolean,
+    fullscreen: Boolean,
+    onPanel: (Panel?) -> Unit,
+    onToggleFullscreen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     // While dragging, and after letting go until mpv got there, the bar shows the target, not the old position
     var dragging by remember { mutableStateOf<Float?>(null) }
+    var hovering by remember { mutableStateOf<Float?>(null) }
     var seekingTo by remember { mutableStateOf<Pair<Float, Long>?>(null) }
     LaunchedEffect(status) {
         seekingTo?.let { (target, at) ->
             if (abs(status.position - target) < 2 || System.currentTimeMillis() - at > 3000) seekingTo = null
         }
     }
-    var volume by remember { mutableStateOf<Float?>(null) }
     val duration = status.duration.toFloat()
     val position = dragging ?: seekingTo?.first ?: status.position.toFloat()
+    val accent = accent()
 
-    Row(
-        modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 8.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        IconButton(onClick = player::togglePause) {
-            Icon(
-                painterResource(if (status.paused) Res.drawable.play_arrow_24px else Res.drawable.pause_24px),
-                contentDescription = if (status.paused) "Play" else "Pause",
-            )
-        }
-        TextButton(onClick = { player.seek(-10.0) }) { Text("−10 s") }
-        TextButton(onClick = { player.seek(10.0) }) { Text("+10 s") }
-        Text(
-            if (duration > 0) "${formatTime((position * 1000).toLong())} / ${formatTime((duration * 1000).toLong())}" else "--:--",
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(horizontal = 8.dp),
-        )
-        Slider(
-            value = position.coerceIn(0f, duration.coerceAtLeast(1f)),
-            onValueChange = { dragging = it },
-            onValueChangeFinished = {
+    Column(modifier.fillMaxWidth().background(PlayerColors.bar).padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 4.dp)) {
+        SeekBar(
+            value = if (duration > 0) position / duration else 0f,
+            buffered = if (duration > 0) (status.bufferedTo.toFloat() / duration).coerceIn(0f, 1f) else 0f,
+            enabled = duration > 0,
+            accent = accent,
+            onChange = { dragging = it * duration },
+            onHover = { hovering = it?.times(duration) },
+            onDone = {
                 dragging?.let {
                     player.seekTo(it.toDouble())
                     seekingTo = it to System.currentTimeMillis()
                 }
                 dragging = null
             },
-            valueRange = 0f..duration.coerceAtLeast(1f),
-            enabled = duration > 0,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.fillMaxWidth(),
         )
-        IconButton(onClick = player::toggleMute) {
-            Icon(
-                painterResource(if (status.muted || status.volume == 0) Res.drawable.ic_baseline_volume_mute_24 else Res.drawable.ic_baseline_volume_up_24),
-                contentDescription = if (status.muted) "Unmute" else "Mute",
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            PlayerIcon(
+                if (status.paused) Res.drawable.play_arrow_24px else Res.drawable.pause_24px,
+                if (status.paused) "Play" else "Pause",
+                size = 30.dp,
+                onClick = player::togglePause,
+            )
+            SkipButton(forward = false) { player.seek(-10.0) }
+            SkipButton(forward = true) { player.seek(10.0) }
+            var volume by remember { mutableStateOf<Float?>(null) }
+            PlayerIcon(
+                if (status.muted || status.volume == 0) Res.drawable.ic_baseline_volume_mute_24 else Res.drawable.ic_baseline_volume_up_24,
+                if (status.muted) "Unmute" else "Mute",
+                onClick = player::toggleMute,
+            )
+            SeekBar(
+                value = (volume ?: status.volume.toFloat()) / 100f,
+                accent = PlayerColors.content,
+                onChange = {
+                    volume = it * 100
+                    player.setVolume((it * 100).toInt())
+                },
+                onDone = { volume = null },
+                modifier = Modifier.width(96.dp),
+            )
+            // The hovered time shows in place of the position, to see where a click would go
+            val shown = hovering ?: position
+            Text(
+                if (duration > 0) "${formatTime((shown * 1000).toLong())} / ${formatTime((duration * 1000).toLong())}" else "",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (hovering != null) accent else PlayerColors.content,
+                modifier = Modifier.padding(start = 16.dp),
+            )
+            Box(Modifier.weight(1f))
+
+            val subtitleTracks = state.subtitles.isNotEmpty() || status.tracks.any { it.type == "sub" }
+            PanelButton(Res.drawable.ic_baseline_subtitles_24, "Subtitles", panel == Panel.Subtitles, active = subtitleOn, enabled = subtitleTracks) {
+                onPanel(if (panel == Panel.Subtitles) null else Panel.Subtitles)
+            }
+            val audio = status.tracks.count { it.type == "audio" }
+            PanelButton(
+                Res.drawable.ic_baseline_audiotrack_24, "Audio", panel == Panel.Audio,
+                label = if (audio > 1) "$audio" else null,
+            ) { onPanel(if (panel == Panel.Audio) null else Panel.Audio) }
+            PanelButton(
+                Res.drawable.ic_baseline_speed_24, "Speed", panel == Panel.Speed,
+                label = if (status.speed != 1.0) speedLabel(status.speed) else null,
+                active = status.speed != 1.0,
+            ) { onPanel(if (panel == Panel.Speed) null else Panel.Speed) }
+            PanelButton(
+                Res.drawable.ic_baseline_hd_24, "Source", panel == Panel.Source,
+                label = state.selectedLink?.let { Qualities.getStringByInt(it.quality).ifBlank { null } } ?: "Source",
+                enabled = state.links.isNotEmpty(),
+            ) { onPanel(if (panel == Panel.Source) null else Panel.Source) }
+            PlayerIcon(
+                if (fullscreen) Res.drawable.baseline_fullscreen_exit_24 else Res.drawable.baseline_fullscreen_24,
+                if (fullscreen) "Leave full screen" else "Full screen",
+                onClick = onToggleFullscreen,
             )
         }
-        Slider(
-            value = volume ?: status.volume.toFloat(),
-            onValueChange = {
-                volume = it
-                player.setVolume(it.toInt())
-            },
-            onValueChangeFinished = { volume = null },
-            valueRange = 0f..100f,
-            modifier = Modifier.width(110.dp),
-        )
-        IconButton(onClick = onToggleFullscreen) {
+    }
+}
+
+@Composable
+private fun PlayerIcon(
+    icon: DrawableResource,
+    description: String,
+    size: Dp = 24.dp,
+    tint: Color = PlayerColors.content,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, enabled = enabled) {
+        Icon(painterResource(icon), contentDescription = description, tint = if (enabled) tint else tint.copy(alpha = 0.3f), modifier = Modifier.size(size))
+    }
+}
+
+/** Back or forward 10 seconds: the replay arrow with a 10 inside, mirrored to go forward */
+@Composable
+private fun SkipButton(forward: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Box(contentAlignment = Alignment.Center) {
             Icon(
-                painterResource(if (fullscreen) Res.drawable.baseline_fullscreen_exit_24 else Res.drawable.baseline_fullscreen_24),
-                contentDescription = if (fullscreen) "Leave full screen" else "Full screen",
+                painterResource(Res.drawable.ic_baseline_replay_24),
+                contentDescription = if (forward) "Forward 10 seconds" else "Back 10 seconds",
+                tint = PlayerColors.content,
+                modifier = Modifier.size(28.dp).graphicsLayer { if (forward) scaleX = -1f },
             )
+            Text("10", color = PlayerColors.content, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+}
+
+/** Opens a picker: tinted while it is open or its setting is on, with a short label when there is one */
+@Composable
+private fun PanelButton(
+    icon: DrawableResource,
+    description: String,
+    open: Boolean,
+    label: String? = null,
+    active: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val color = when {
+        !enabled -> PlayerColors.content.copy(alpha = 0.3f)
+        open || active -> accent()
+        else -> PlayerColors.content
+    }
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (open) PlayerColors.selected else Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(painterResource(icon), contentDescription = description, tint = color, modifier = Modifier.size(22.dp))
+        label?.let { Text(it, color = color, style = MaterialTheme.typography.labelLarge) }
+    }
+}
+
+/**
+ * A thin bar that thickens under the mouse: [value] and [buffered] are fractions. Clicking or
+ * dragging calls [onChange] with the fraction under the mouse, [onDone] when the mouse is let go.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun SeekBar(
+    value: Float,
+    accent: Color,
+    onChange: (Float) -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+    buffered: Float = 0f,
+    enabled: Boolean = true,
+    onHover: (Float?) -> Unit = {},
+) {
+    var width by remember { mutableStateOf(1) }
+    var hovered by remember { mutableStateOf(false) }
+    var pressed by remember { mutableStateOf(false) }
+    val currentChange by rememberUpdatedState(onChange)
+    val currentDone by rememberUpdatedState(onDone)
+    val currentHover by rememberUpdatedState(onHover)
+    fun fraction(x: Float) = (x / width).coerceIn(0f, 1f)
+    val thick = enabled && (hovered || pressed)
+    Box(
+        modifier
+            .height(20.dp)
+            .onSizeChanged { width = it.width.coerceAtLeast(1) }
+            .onPointerEvent(PointerEventType.Enter) { hovered = true }
+            .onPointerEvent(PointerEventType.Exit) {
+                hovered = false
+                currentHover(null)
+            }
+            .onPointerEvent(PointerEventType.Move) { if (enabled) currentHover(fraction(it.changes.first().position.x)) }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    pressed = true
+                    currentChange(fraction(down.position.x))
+                    drag(down.id) { change ->
+                        currentChange(fraction(change.position.x))
+                        change.consume()
+                    }
+                    pressed = false
+                    currentDone()
+                }
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Canvas(Modifier.fillMaxWidth().height(if (thick) 6.dp else 3.dp)) {
+            val r = CornerRadius(size.height / 2)
+            drawRoundRect(PlayerColors.track, cornerRadius = r)
+            if (buffered > 0) drawRoundRect(PlayerColors.buffered, size = Size(size.width * buffered, size.height), cornerRadius = r)
+            drawRoundRect(accent, size = Size(size.width * value.coerceIn(0f, 1f), size.height), cornerRadius = r)
+        }
+        if (thick) Canvas(Modifier.fillMaxWidth().height(14.dp)) {
+            drawCircle(accent, radius = size.height / 2, center = Offset(size.width * value.coerceIn(0f, 1f), size.height / 2))
         }
     }
 }
@@ -427,8 +691,8 @@ private fun SidePanel(
     onAudioTrack: (Int) -> Unit,
     onSpeed: (Double) -> Unit,
 ) {
-    LazyColumn(Modifier.width(380.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surface)) {
-        item { Text(panel.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp)) }
+    LazyColumn(Modifier.width(380.dp).fillMaxHeight().background(PlayerColors.panel)) {
+        item { Text(panel.title, style = MaterialTheme.typography.titleMedium, color = PlayerColors.content, modifier = Modifier.padding(16.dp)) }
         when (panel) {
             // Names are shown whole: many sources differ only at the end of their name
             Panel.Source -> items(state.links) { link ->
@@ -447,7 +711,6 @@ private fun SidePanel(
                 // Timing first: a video can hold dozens of subtitle tracks
                 if (shown != null) item { SubtitleTiming(status.subDelay, onSubDelay) }
                 item { Choice("Off", selected = shown == null) { onSubtitleTrack(null) } }
-                // Every extension subtitle, downloaded the first time it is picked
                 // Sorted by language. Extensions often give several of one: they are numbered and show where they come from
                 val subtitles = state.subtitles.sortedBy { it.lang.lowercase() }
                 val labels = subtitleLabels(subtitles)
@@ -460,12 +723,31 @@ private fun SidePanel(
                     ) { onSubtitle(sub) }
                 }
                 items(tracks.filter { !it.external }) { track ->
-                    Choice(track.label, detail = "In the video", selected = track.selected) { onSubtitleTrack(track.id) }
+                    Choice(track.label, detail = listOf("In the video", track.details).filter { it.isNotEmpty() }.joinToString(" · "), selected = track.selected) {
+                        onSubtitleTrack(track.id)
+                    }
                 }
             }
 
-            Panel.Audio -> items(status.tracks.filter { it.type == "audio" }) { track ->
-                Choice(track.label, selected = track.selected) { onAudioTrack(track.id) }
+            Panel.Audio -> {
+                val tracks = status.tracks.filter { it.type == "audio" }
+                items(tracks) { track ->
+                    Choice(
+                        track.label,
+                        detail = listOf(if (track.external) "From the extension" else "In the video", track.details).filter { it.isNotEmpty() }.joinToString(" · "),
+                        selected = track.selected,
+                    ) { onAudioTrack(track.id) }
+                }
+                // Many sources carry one language each: say so, rather than leave an empty choice
+                if (tracks.size <= 1) item {
+                    Text(
+                        if (tracks.isEmpty()) "No audio track yet. It shows once the video starts."
+                        else "This source has one audio track. Other sources may be in other languages: look in Source.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PlayerColors.secondary,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                }
             }
 
             Panel.Speed -> items(speeds) { speed ->
@@ -478,8 +760,9 @@ private fun SidePanel(
 /** Moves the subtitles earlier or later when they are out of sync with the speech */
 @Composable
 private fun SubtitleTiming(delay: Double, onChange: (Double) -> Unit) {
+    val accent = accent()
     Column(Modifier.fillMaxWidth().padding(16.dp)) {
-        Text("Timing", style = MaterialTheme.typography.titleSmall)
+        Text("Timing", style = MaterialTheme.typography.titleSmall, color = PlayerColors.content)
         Text(
             when {
                 abs(delay) < 0.05 -> "In sync with the video"
@@ -487,12 +770,12 @@ private fun SubtitleTiming(delay: Double, onChange: (Double) -> Unit) {
                 else -> "Shown %.1f s earlier".format(-delay)
             },
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = PlayerColors.secondary,
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { onChange(-0.5) }) { Text("Earlier") }
-            TextButton(onClick = { onChange(0.5) }) { Text("Later") }
-            if (abs(delay) >= 0.05) TextButton(onClick = { onChange(0.0) }) { Text("Reset") }
+            TextButton(onClick = { onChange(-0.5) }) { Text("Earlier", color = accent) }
+            TextButton(onClick = { onChange(0.5) }) { Text("Later", color = accent) }
+            if (abs(delay) >= 0.05) TextButton(onClick = { onChange(0.0) }) { Text("Reset", color = accent) }
         }
     }
 }
@@ -506,22 +789,34 @@ private fun Choice(
     maxLines: Int = 2,
     onClick: () -> Unit,
 ) {
-    Column(
+    val accent = accent()
+    Row(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-            .padding(horizontal = 16.dp, vertical = 10.dp)
+            .background(if (selected) PlayerColors.selected else Color.Transparent)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, style = MaterialTheme.typography.bodyMedium, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
-        detail?.let {
+        Column(Modifier.weight(1f)) {
             Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (selected) accent else PlayerColors.content,
+                fontWeight = if (selected) FontWeight.SemiBold else null,
                 maxLines = maxLines,
                 overflow = TextOverflow.Ellipsis,
             )
+            detail?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (error) MaterialTheme.colorScheme.error else PlayerColors.secondary,
+                    maxLines = maxLines,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
+        if (selected) Text("✓", color = accent, modifier = Modifier.padding(start = 8.dp))
     }
 }
