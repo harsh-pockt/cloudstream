@@ -25,6 +25,7 @@ import androidx.compose.ui.window.DialogWindow
 import androidx.compose.ui.window.rememberDialogState
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowState
+import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import coil3.compose.setSingletonImageLoaderFactory
@@ -76,22 +77,46 @@ fun main() {
         val windowState = rememberSavedWindowState(savedWindow)
         val navigator = remember { AppNavigator() }
         var appWindow by remember { mutableStateOf<java.awt.Window?>(null) }
+        val quit = {
+            // So the window's normal size is saved, not the whole screen
+            appWindow?.let(WindowsFullscreen::exit)
+            savedWindow.save(windowState)
+            exitApplication()
+        }
+        val icon = painterResource(Res.drawable.default_icon)
         Window(
-            onCloseRequest = {
-                // So the window's normal size is saved, not the whole screen
-                appWindow?.let(WindowsFullscreen::exit)
-                savedWindow.save(windowState)
-                exitApplication()
-            },
+            onCloseRequest = quit,
             state = windowState,
+            visible = WindowsHide.supported || !navigator.hidden,
             title = stringResource(Res.string.app_name),
-            icon = painterResource(Res.drawable.default_icon),
+            icon = icon,
             onPreviewKeyEvent = navigator::onKeyEvent,
+            onKeyEvent = navigator::onUnhandledKeyEvent,
         ) {
             appWindow = window
             MainContent(navigator)
             FullscreenEffect(navigator, windowState, window)
+            LaunchedEffect(navigator.hidden) {
+                if (WindowsHide.supported) {
+                    if (navigator.hidden) WindowsHide.hide(window) else WindowsHide.show(window)
+                }
+                if (navigator.hidden) return@LaunchedEffect
+                window.toFront()
+                // A window shown again doesn't hand the keys back to its content by itself, and the
+                // window itself taking them leaves every shortcut dead
+                (window.mostRecentFocusOwner ?: window.focusTraversalPolicy?.getDefaultComponent(window))?.requestFocus()
+            }
         }
+        // While the app is hidden, the only way back. Double click, or right click for the menu
+        if (navigator.hidden) Tray(
+            icon = icon,
+            tooltip = stringResource(Res.string.app_name),
+            onAction = { navigator.hidden = false },
+            menu = {
+                Item("Show CloudStream", onClick = { navigator.hidden = false })
+                Item("Quit", onClick = quit)
+            },
+        )
     }
 }
 

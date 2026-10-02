@@ -106,7 +106,7 @@ private sealed interface SubtitleChoice {
  * The bar on top shows the title and source; the bar below plays, seeks, sets the volume and opens
  * the subtitle, audio, speed and source pickers. In full screen the bars show while the mouse moves and hide after a few seconds.
  * Space or K pauses, the left and right arrows or J and L go 10 s back and forward, the up and down
- * arrows change the volume, M mutes, F toggles full screen. Escape closes an open panel, then
+ * arrows change the volume, F toggles full screen, M pauses and hides the app. Escape closes an open panel, then
  * leaves full screen, then goes back. A click on the video closes an open panel, or pauses.
  */
 @OptIn(ExperimentalComposeUiApi::class)
@@ -276,7 +276,11 @@ fun PlayerScreen(
             Key.DirectionRight, Key.L -> player.seek(10.0)
             Key.DirectionUp -> player.changeVolume(5)
             Key.DirectionDown -> player.changeVolume(-5)
-            Key.M -> player.toggleMute()
+            // The app hides at once, and the video must not carry on behind it: the window handles M next
+            Key.M -> {
+                player.pause()
+                return false
+            }
             Key.F -> currentFullscreen()
             Key.Escape -> if (panel != null) panel = null else return false
             else -> return false

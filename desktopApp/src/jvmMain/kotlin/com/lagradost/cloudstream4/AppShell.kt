@@ -36,6 +36,8 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream4.generated.resources.*
@@ -96,7 +98,7 @@ sealed class Page : ViewModelStoreOwner {
  * Navigation for the desktop app: a rail on the left and the selected destination on the right,
  * with pages such as details and the player opened on top.
  * Ctrl+1 to Ctrl+4 switch destination, Ctrl+F opens Search, Escape, Alt+Left or the mouse's back
- * button goes back.
+ * button goes back. M pauses the player and hides the app, see [hidden].
  */
 class AppNavigator {
     var destination by mutableStateOf(Destination.Home)
@@ -175,6 +177,18 @@ class AppNavigator {
         return false
     }
 
+    /**
+     * The whole app is out of sight, the window gone from the screen, the taskbar and Alt+Tab, after
+     * M was pressed. The tray icon brings it back.
+     */
+    var hidden by mutableStateOf(false)
+
+    private fun isHideKey(event: KeyEvent) = event.type == KeyEventType.KeyDown && event.key == Key.M &&
+            !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed && !event.isShiftPressed
+
+    /** A text field being typed in gets the M press too, which must not hide the app halfway through a word */
+    val typing = TypingTracker()
+
     fun onKeyEvent(event: KeyEvent): Boolean {
         if (pages.lastOrNull() is Page.Player && playerKeys?.invoke(event) == true) return true
         if (event.type != KeyEventType.KeyDown) return false
@@ -191,6 +205,13 @@ class AppNavigator {
         }
         if (event.key == Key.Escape || (event.isAltPressed && event.key == Key.DirectionLeft)) return back()
         return false
+    }
+
+    /** Keys nothing on the page used. The open player has paused on M already */
+    fun onUnhandledKeyEvent(event: KeyEvent): Boolean {
+        if (!isHideKey(event) || typing.active) return false
+        hidden = true
+        return true
     }
 }
 
@@ -218,58 +239,60 @@ fun AppShell(navigator: AppNavigator) {
 
     val page = navigator.pages.lastOrNull()
     val hideRail = page is Page.Player && navigator.fullscreen
-    Row(
-        Modifier
-            .fillMaxSize()
-            // The mouse's back button goes back, as in a browser
-            .onPointerEvent(PointerEventType.Press) { if (it.button == PointerButton.Back) navigator.back() },
-    ) {
-        if (!hideRail) NavigationRail(
-            modifier = Modifier.fillMaxHeight(),
-            containerColor = MaterialTheme.colorScheme.background,
+    navigator.typing.Provide {
+        Row(
+            Modifier
+                .fillMaxSize()
+                // The mouse's back button goes back, as in a browser
+                .onPointerEvent(PointerEventType.Press) { if (it.button == PointerButton.Back) navigator.back() },
         ) {
-            Column(
+            if (!hideRail) NavigationRail(
                 modifier = Modifier.fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+                containerColor = MaterialTheme.colorScheme.background,
             ) {
-                Destination.entries.forEach { destination ->
-                    val selected = navigator.destination == destination
-                    NavigationRailItem(
-                        selected = selected,
-                        onClick = { navigator.select(destination) },
-                        icon = {
-                            Icon(
-                                painterResource(if (selected) destination.selectedIcon else destination.icon),
-                                contentDescription = null,
-                            )
-                        },
-                        label = { Text(stringResource(destination.title)) },
-                    )
-                }
-            }
-        }
-        if (!hideRail) VerticalDivider()
-        Box(Modifier.weight(1f).fillMaxHeight()) {
-            if (page != null) {
-                CompositionLocalProvider(LocalViewModelStoreOwner provides page) {
-                    PageContent(page, navigator)
-                }
-            } else when (navigator.destination) {
-                Destination.Settings -> {
-                    val settingsPage = navigator.settingsStack.lastOrNull()
-                        ?: remember(navigator) { SettingsHomeScreen(navigator::open) }
-                    val back: (() -> Unit)? = if (navigator.settingsStack.isEmpty()) null else ({ navigator.back() })
-                    CompositionLocalProvider(LocalBackPress provides back) {
-                        settingsPage.Content()
+                Column(
+                    modifier = Modifier.fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+                ) {
+                    Destination.entries.forEach { destination ->
+                        val selected = navigator.destination == destination
+                        NavigationRailItem(
+                            selected = selected,
+                            onClick = { navigator.select(destination) },
+                            icon = {
+                                Icon(
+                                    painterResource(if (selected) destination.selectedIcon else destination.icon),
+                                    contentDescription = null,
+                                )
+                            },
+                            label = { Text(stringResource(destination.title)) },
+                        )
                     }
                 }
-
-                Destination.Home -> HomeScreen(home, navigator::openExtensions, navigator::openDetails)
-                Destination.Search -> SearchScreen(search, navigator::openExtensions, navigator::openDetails)
-                Destination.Library -> LibraryScreen(DataStoreWatchStore.instance, navigator::openDetails)
-                else -> ComingSoon(navigator.destination)
             }
-            SnackbarHost(toasts, Modifier.align(Alignment.BottomCenter).padding(16.dp))
+            if (!hideRail) VerticalDivider()
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+                if (page != null) {
+                    CompositionLocalProvider(LocalViewModelStoreOwner provides page) {
+                        PageContent(page, navigator)
+                    }
+                } else when (navigator.destination) {
+                    Destination.Settings -> {
+                        val settingsPage = navigator.settingsStack.lastOrNull()
+                            ?: remember(navigator) { SettingsHomeScreen(navigator::open) }
+                        val back: (() -> Unit)? = if (navigator.settingsStack.isEmpty()) null else ({ navigator.back() })
+                        CompositionLocalProvider(LocalBackPress provides back) {
+                            settingsPage.Content()
+                        }
+                    }
+
+                    Destination.Home -> HomeScreen(home, navigator::openExtensions, navigator::openDetails)
+                    Destination.Search -> SearchScreen(search, navigator::openExtensions, navigator::openDetails)
+                    Destination.Library -> LibraryScreen(DataStoreWatchStore.instance, navigator::openDetails)
+                    else -> ComingSoon(navigator.destination)
+                }
+                SnackbarHost(toasts, Modifier.align(Alignment.BottomCenter).padding(16.dp))
+            }
         }
     }
 }
