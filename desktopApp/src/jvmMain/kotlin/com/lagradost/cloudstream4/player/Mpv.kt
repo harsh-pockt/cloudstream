@@ -74,15 +74,43 @@ data class MpvTrack(
     val external: Boolean,
     /** The file an external track was added from */
     val externalFilename: String? = null,
+    /** For example "eac3" or "subrip" */
+    val codec: String? = null,
+    /** Audio channels, for example 6 for 5.1 */
+    val channels: Int? = null,
+    val default: Boolean = false,
 ) {
-    val label: String get() = listOfNotNull(title, lang).distinct().joinToString(" · ").ifEmpty { "Track $id" }
+    /** The language spelled out, for example "Hindi" for "hin" */
+    val language: String? get() = lang?.let(::languageName)
+
+    /** For example "Hindi", "Commentary · English" or "Track 2" */
+    val label: String get() = listOfNotNull(title, language).distinctBy { it.lowercase() }.joinToString(" · ").ifEmpty { "Track $id" }
+
+    /** For example "5.1 · EAC3", what tells two tracks in one language apart */
+    val details: String get() = listOfNotNull(
+        channels?.let { when (it) { 1 -> "Mono"; 2 -> "Stereo"; 6 -> "5.1"; 8 -> "7.1"; else -> "$it channels" } },
+        codec?.uppercase(),
+        "Default".takeIf { default },
+    ).joinToString(" · ")
+}
+
+/** "Hindi" for "hin" or "hi", the code itself when it is not a language */
+internal fun languageName(code: String): String {
+    val locale = java.util.Locale.forLanguageTag(code)
+    val name = locale.getDisplayLanguage(java.util.Locale.ENGLISH)
+    return if (name.isBlank() || name.equals(code, ignoreCase = true)) code else name
 }
 
 data class MpvStatus(
     val position: Double = 0.0,
     val duration: Double = 0.0,
     val paused: Boolean = false,
+    /** Waiting for data: the file is opening, a seek is under way or the cache ran empty */
     val buffering: Boolean = false,
+    /** How full the cache is before playback goes on, 0 to 100, when mpv knows */
+    val bufferPercent: Int? = null,
+    /** How far ahead of the start the cache reaches, in seconds */
+    val bufferedTo: Double = 0.0,
     val tracks: List<MpvTrack> = emptyList(),
     /** 0 to 100 */
     val volume: Int = 100,
@@ -121,6 +149,8 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
     @Volatile private var currentUrl: String? = null
     /** Whether the current file finished loading. Subtitles can only be added to a loaded file */
     private var fileLoaded = false
+    /** From loadfile until the first frame plays */
+    @Volatile private var opening = false
     private val afterLoad = mutableListOf<() -> Unit>()
 
     private val _events = Channel<MpvEvent>(Channel.UNLIMITED)
@@ -226,6 +256,7 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
                 val event = lib.mpv_wait_event(ctx, -1.0)
                 when (event.getInt(0)) {
                     MPV_EVENT_SHUTDOWN -> return
+                    MPV_EVENT_PLAYBACK_RESTART -> opening = false
                     MPV_EVENT_FILE_LOADED -> synchronized(this) {
                         fileLoaded = true
                         afterLoad.forEach { it() }
@@ -235,6 +266,7 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
                         val data = event.getPointer(16)
                         val reason = data.getInt(0)
                         val url = currentUrl ?: continue
+                        if (reason == END_FILE_REASON_ERROR) opening = false
                         when (reason) {
                             END_FILE_REASON_EOF -> _events.trySend(MpvEvent.Ended)
                             END_FILE_REASON_ERROR -> _events.trySend(MpvEvent.Failed(url, lib.mpv_error_string(data.getInt(4))))
@@ -283,6 +315,7 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
         // keep-open pauses at the end of a file, which would carry over to the next one
         command("set", "pause", "no")
         fileLoaded = false
+        opening = true
         afterLoad.clear()
         command("loadfile", link.url, "replace")
         link.audioTracks.forEach { command("audio-add", it.url, "auto") }
@@ -326,6 +359,15 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
 
     fun resetSubDelay() = whenStarted { command("set", "sub-delay", "0") }
 
+    /**
+     * Draws [ass] over the video, in ASS on a 1280 by 720 canvas, or removes it when null. The
+     * video is a native window, so this is the only way to show something on top of it.
+     */
+    fun overlay(ass: String?) = whenStarted {
+        if (ass == null) command("osd-overlay", OVERLAY_ID, "none", "")
+        else command("osd-overlay", OVERLAY_ID, "ass-events", ass, "1280", "720")
+    }
+
     fun status(): MpvStatus {
         if (!started || closed) return MpvStatus()
         val count = property("track-list/count")?.toIntOrNull() ?: 0
@@ -339,13 +381,18 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
                 selected = property("${prefix}selected") == "yes",
                 external = property("${prefix}external") == "yes",
                 externalFilename = property("${prefix}external-filename"),
+                codec = property("${prefix}codec"),
+                channels = property("${prefix}demux-channel-count")?.toIntOrNull(),
+                default = property("${prefix}default") == "yes",
             )
         }
         return MpvStatus(
             position = property("time-pos")?.toDoubleOrNull() ?: 0.0,
             duration = property("duration")?.toDoubleOrNull() ?: 0.0,
             paused = property("pause") == "yes",
-            buffering = property("paused-for-cache") == "yes",
+            buffering = opening || property("paused-for-cache") == "yes" || property("seeking") == "yes",
+            bufferPercent = property("cache-buffering-state")?.toIntOrNull(),
+            bufferedTo = property("demuxer-cache-time")?.toDoubleOrNull() ?: 0.0,
             tracks = tracks,
             volume = property("volume")?.toDoubleOrNull()?.toInt() ?: 100,
             muted = property("mute") == "yes",
@@ -358,6 +405,8 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
         const val MPV_EVENT_SHUTDOWN = 1
         const val MPV_EVENT_END_FILE = 7
         const val MPV_EVENT_FILE_LOADED = 8
+        const val MPV_EVENT_PLAYBACK_RESTART = 21
+        const val OVERLAY_ID = "1"
         const val END_FILE_REASON_EOF = 0
         const val END_FILE_REASON_ERROR = 4
     }
