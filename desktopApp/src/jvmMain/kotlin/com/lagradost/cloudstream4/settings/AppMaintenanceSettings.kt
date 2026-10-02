@@ -200,7 +200,7 @@ object SettingsStorageScreen : SearchableSettings {
                     Text(
                         when (reset) {
                             AppData.Reset.CACHE -> "Posters and other downloaded files are deleted and downloaded again when needed."
-                            AppData.Reset.EXTENSIONS -> "Every installed extension and its saved data is removed. Your repositories and settings stay."
+                            AppData.Reset.EXTENSIONS -> "Every installed extension and its files are removed. Your repositories, settings and library stay."
                             AppData.Reset.EVERYTHING -> "Settings, repositories, extensions and everything else are deleted, as if CloudStream had just been installed."
                         } + " CloudStream restarts to do this."
                     )
@@ -227,7 +227,7 @@ object SettingsStorageScreen : SearchableSettings {
                 preferenceItems = listOf(
                     Preference.PreferenceItem.InfoPreference("CloudStream keeps its data in ${AppDirs.root} and its cache in ${AppDirs.cache}."),
                     item(AppData.Reset.CACHE, "Posters and other files that can be downloaded again"),
-                    item(AppData.Reset.EXTENSIONS, "Installed extensions and their data. Repositories and settings stay"),
+                    item(AppData.Reset.EXTENSIONS, "Installed extensions and their files. Repositories, settings and the library stay"),
                     item(AppData.Reset.EVERYTHING, "Start fresh, as if CloudStream had just been installed"),
                 ),
             ),

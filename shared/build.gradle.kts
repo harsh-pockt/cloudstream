@@ -51,6 +51,7 @@ kotlin {
 
         jvmMain.dependencies {
             api(project(":androidCompat"))
+            implementation(libs.jackson.module.kotlin)
             implementation(libs.ktor.client.java)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.okhttp)

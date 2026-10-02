@@ -22,6 +22,9 @@ import com.lagradost.cloudstream4.detail.DetailAction
 import com.lagradost.cloudstream4.detail.DetailStatus
 import com.lagradost.cloudstream4.detail.DetailViewModel
 import com.lagradost.cloudstream4.detail.PlayRequest
+import com.lagradost.cloudstream4.library.InMemoryWatchStore
+import com.lagradost.cloudstream4.library.WatchType
+import com.lagradost.cloudstream4.library.saveProgress
 import com.lagradost.cloudstream4.player.LinksAction
 import com.lagradost.cloudstream4.player.LinksViewModel
 import kotlinx.coroutines.CompletableDeferred
@@ -110,7 +113,7 @@ class PlaybackViewModelTest {
         assertEquals("movie-data", state.movieData)
         assertEquals(listOf("Drama"), state.response!!.tags)
         assertTrue(state.seasons.isEmpty())
-        assertEquals(PlayRequest("Catalog", "A movie", null, "movie-data"), vm.playRequest())
+        assertEquals(PlayRequest("Catalog", "A movie", null, "movie-data"), vm.playRequest()!!.copy(tracking = null))
     }
 
     @Test
@@ -121,7 +124,7 @@ class PlaybackViewModelTest {
         assertEquals(listOf("s1e1", "s1e2"), state.seasons[0].episodes.map { it.data })
 
         val pilot = state.seasons[0].episodes[0]
-        assertEquals(PlayRequest("Catalog", "A series", "S1 E1 · Pilot", "s1e1"), vm.playRequest(pilot))
+        assertEquals(PlayRequest("Catalog", "A series", "S1 E1 · Pilot", "s1e1"), vm.playRequest(pilot)!!.copy(tracking = null))
 
         vm.onAction(DetailAction.SelectSeason(1))
         assertEquals(1, vm.state.value.selectedSeason)
@@ -214,5 +217,66 @@ class PlaybackViewModelTest {
         val state = await(vm.state) { !it.loading }
         assertNull(state.selected)
         assertTrue(state.exhausted)
+    }
+
+    @Test
+    fun episodeIdsAreTheAndroidAppsIds() {
+        val vm = DetailViewModel(api, "https://example.invalid/series")
+        val state = await(vm.state) { it.status == DetailStatus.Done }
+        // The url without the provider's address and slashes, hashed, like ResultViewModel2.getId
+        val titleId = "series".hashCode()
+        assertEquals(titleId, state.titleId)
+        // Series episodes sort by season then number: extra, S1 E1, S1 E2, S2 E1
+        val pilot = state.seasons[0].episodes[0]
+        assertEquals(titleId + 100_000 + 1 + 1, state.episodeIds[pilot])
+
+        val anime = await(DetailViewModel(api, "https://example.invalid/anime").state) { it.status == DetailStatus.Done }
+        val dubbed = anime.episodeIds.entries.single { it.key.data == "dub1" }.value
+        assertEquals("anime".hashCode() + 1 + 1_000_000, dubbed)
+    }
+
+    @Test
+    fun libraryAndResumeFollowWhatWasWatched() {
+        val store = InMemoryWatchStore()
+        val vm = DetailViewModel(api, "https://example.invalid/series", store)
+        val state = await(vm.state) { it.status == DetailStatus.Done }
+        val (pilot, second) = state.seasons[0].episodes
+
+        vm.onAction(DetailAction.SetBookmark(WatchType.WATCHING))
+        assertEquals(WatchType.WATCHING, vm.state.value.bookmark)
+        assertEquals("A series", store.bookmark(state.titleId!!)!!.header.name)
+
+        // Halfway through the pilot: Resume picks it up there
+        val tracking = vm.playRequest(pilot)!!.tracking!!
+        assertEquals(state.episodeIds[second], tracking.next!!.id)
+        store.saveProgress(tracking, positionMs = 600_000, durationMs = 1_200_000)
+        await(vm.state) { it.resume?.episode == pilot }
+        assertEquals(600_000, vm.state.value.resume!!.positionMs)
+        assertEquals(0.5f, vm.state.value.progressOf(pilot)!!.fraction)
+        assertEquals(600_000, vm.playRequest(pilot)!!.tracking!!.startPositionMs)
+
+        // Nearly finished: Continue watching moves on to the next episode, which starts at the beginning
+        store.saveProgress(tracking, positionMs = 1_150_000, durationMs = 1_200_000)
+        await(vm.state) { it.resume?.episode == second }
+        assertTrue(vm.state.value.progressOf(pilot)!!.watched)
+        assertEquals(0, vm.playRequest(pilot)!!.tracking!!.startPositionMs, "A finished episode starts again from the beginning")
+
+        // Finishing the last episode takes the title out of Continue watching
+        val extra = vm.playRequest(state.seasons[2].episodes.single())!!.tracking!!
+        assertNull(extra.next)
+        store.saveProgress(extra, positionMs = 1_190_000, durationMs = 1_200_000)
+        assertNull(store.resume(state.titleId!!))
+
+        vm.onAction(DetailAction.SetBookmark(WatchType.NONE))
+        assertNull(store.bookmark(state.titleId!!))
+    }
+
+    @Test
+    fun shortVideosAreNotRemembered() {
+        val store = InMemoryWatchStore()
+        val vm = DetailViewModel(api, "https://example.invalid/movie", store)
+        await(vm.state) { it.status == DetailStatus.Done }
+        store.saveProgress(vm.playRequest()!!.tracking!!, positionMs = 10_000, durationMs = 20_000)
+        assertTrue(store.resumeEntries().isEmpty())
     }
 }

@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.lagradost.cloudstream4.library.DataStoreWatchStore
 import com.lagradost.cloudstream4.generated.resources.Res
 import com.lagradost.cloudstream4.generated.resources.arrow_downward
 import com.lagradost.cloudstream4.home.HomeAction
@@ -44,6 +45,8 @@ fun HomeScreen(viewModel: HomeViewModel, openExtensions: () -> Unit, openDetails
 
     Column(Modifier.fillMaxSize()) {
         if (state.providers.isNotEmpty()) TopBar(state, viewModel::onAction)
+        // Above the provider's rows, so it is there even when the provider fails to load
+        ContinueWatchingRow(DataStoreWatchStore.instance, openDetails, Modifier.padding(top = 8.dp))
 
         when (val status = state.status) {
             HomeStatus.NoProviders -> Message(
