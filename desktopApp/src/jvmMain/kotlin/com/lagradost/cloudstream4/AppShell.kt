@@ -25,7 +25,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerButton
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -91,7 +95,8 @@ sealed class Page : ViewModelStoreOwner {
 /**
  * Navigation for the desktop app: a rail on the left and the selected destination on the right,
  * with pages such as details and the player opened on top.
- * Ctrl+1 to Ctrl+4 switch destination, Ctrl+F opens Search, Escape or Alt+Left goes back.
+ * Ctrl+1 to Ctrl+4 switch destination, Ctrl+F opens Search, Escape, Alt+Left or the mouse's back
+ * button goes back.
  */
 class AppNavigator {
     var destination by mutableStateOf(Destination.Home)
@@ -105,6 +110,12 @@ class AppNavigator {
 
     /** The player fills the screen, without the rail or the window frame */
     var fullscreen by mutableStateOf(false)
+
+    /**
+     * Keys the open player handles before the app's own, whatever has the focus: its buttons come
+     * and go, so focus cannot be relied on. Returns true for a key it used.
+     */
+    var playerKeys: ((KeyEvent) -> Boolean)? = null
 
     fun select(destination: Destination) {
         closePages()
@@ -165,6 +176,7 @@ class AppNavigator {
     }
 
     fun onKeyEvent(event: KeyEvent): Boolean {
+        if (pages.lastOrNull() is Page.Player && playerKeys?.invoke(event) == true) return true
         if (event.type != KeyEventType.KeyDown) return false
         if (event.isCtrlPressed) {
             if (event.key == Key.F) {
@@ -185,6 +197,7 @@ class AppNavigator {
 /** All providers the loaded plugins registered */
 private fun loadedProviders() = APIHolder.apis.withLock { APIHolder.apis.toList() }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun AppShell(navigator: AppNavigator) {
     val settings = rememberAppSettings()
@@ -205,7 +218,12 @@ fun AppShell(navigator: AppNavigator) {
 
     val page = navigator.pages.lastOrNull()
     val hideRail = page is Page.Player && navigator.fullscreen
-    Row(Modifier.fillMaxSize()) {
+    Row(
+        Modifier
+            .fillMaxSize()
+            // The mouse's back button goes back, as in a browser
+            .onPointerEvent(PointerEventType.Press) { if (it.button == PointerButton.Back) navigator.back() },
+    ) {
         if (!hideRail) NavigationRail(
             modifier = Modifier.fillMaxHeight(),
             containerColor = MaterialTheme.colorScheme.background,
@@ -295,6 +313,7 @@ private fun PageContent(page: Page, navigator: AppNavigator) {
             fullscreen = navigator.fullscreen,
             onBack = { navigator.back() },
             onToggleFullscreen = navigator::toggleFullscreen,
+            onKeys = { navigator.playerKeys = it },
         )
     }
 }
