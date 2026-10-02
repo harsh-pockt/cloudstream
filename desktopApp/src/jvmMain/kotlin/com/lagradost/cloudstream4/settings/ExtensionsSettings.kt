@@ -37,6 +37,7 @@ import com.mihon.presentation.settings.Preference
 import com.mihon.presentation.settings.SearchableSettings
 import com.mihon.presentation.settings.collectAsState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
@@ -45,6 +46,30 @@ import org.jetbrains.compose.resources.stringResource
 private val repositories = desktopPreferences.getStringSet("desktop_repositories", emptySet())
 
 private val client = RepositoryClient()
+
+/** Adds every repository in the community list, which is what MegaRepo does on Android. Returns how many were new */
+private suspend fun addCommunityRepositories(): Int {
+    val community = client.fetchCommunityRepositories()
+    val new = community.filterNot { it in repositories.get() }
+    repositories.set(repositories.get() + new)
+    return new.size
+}
+
+/**
+ * Adds what the user typed: a repository URL, a cloudstreamrepo:// link or a short code such as
+ * "megarepo". MegaRepo itself is not added: its only plugin is an Android helper that adds the
+ * community repositories, so they are added directly instead. Returns a message for the user.
+ */
+private suspend fun addRepository(input: String): String {
+    val url = client.resolveRepositoryUrl(input) ?: return "No repository found for \"${input.trim()}\""
+    val plugins = client.fetchPlugins(client.fetchRepository(url))
+    if (plugins.isNotEmpty() && plugins.all { it.internalName == RepositoryClient.MEGA_REPO_PLUGIN }) {
+        val added = addCommunityRepositories()
+        return "MegaRepo: added $added community repositories" + if (added == 0) ", you already had them all" else ""
+    }
+    repositories += url
+    return "Added ${url.removePrefix("https://")}"
+}
 
 /** Repositories and installed extensions. Only plugins built with `isCrossPlatform = true` can run on desktop */
 class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : SearchableSettings {
@@ -72,6 +97,22 @@ class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : Searcha
 
         val addRepository = Preference.PreferenceItem.CustomPreference(title = "Add repository") {
             var text by remember { mutableStateOf("") }
+            var adding by remember { mutableStateOf(false) }
+            var message by remember { mutableStateOf<String?>(null) }
+            fun run(action: suspend () -> String) {
+                adding = true
+                message = null
+                scope.launch {
+                    message = try {
+                        action()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        "Could not add it: ${t.message ?: t}"
+                    }
+                    adding = false
+                }
+            }
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -83,21 +124,35 @@ class ExtensionsScreen(private val open: (SearchableSettings) -> Unit) : Searcha
                         onValueChange = { text = it },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
-                        label = { Text("Repository URL (repo.json)") },
+                        label = { Text("Repository URL or short code, for example megarepo") },
                     )
-                    Button(
-                        enabled = text.trim().startsWith("http"),
-                        onClick = {
-                            repositories += text.trim()
-                            text = ""
-                        },
-                    ) { Text("Add") }
+                    BusyOr(adding) {
+                        Button(
+                            enabled = text.isNotBlank(),
+                            onClick = {
+                                val input = text
+                                run { addRepository(input).also { text = "" } }
+                            },
+                        ) { Text("Add") }
+                    }
                 }
-                if (RepositoryClient.OFFICIAL_REPOSITORY !in repos) {
-                    TextButton(
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                        onClick = { repositories += RepositoryClient.OFFICIAL_REPOSITORY },
-                    ) { Text("Add the official repository") }
+                message?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
+                Row(Modifier.padding(horizontal = 8.dp)) {
+                    if (RepositoryClient.OFFICIAL_REPOSITORY !in repos) {
+                        TextButton(onClick = { repositories += RepositoryClient.OFFICIAL_REPOSITORY }) {
+                            Text("Add the official repository")
+                        }
+                    }
+                    TextButton(enabled = !adding, onClick = {
+                        run { "Added ${addCommunityRepositories()} community repositories" }
+                    }) { Text("Add all community repositories") }
                 }
             }
         }
@@ -173,7 +228,9 @@ class RepositoryScreen(private val url: String) : SearchableSettings {
 
             is State.Failed -> listOf(Preference.PreferenceItem.InfoPreference("Could not load $url: ${current.message}"))
 
-            is State.Loaded -> {
+            is State.Loaded -> if (current.plugins.any { it.internalName == RepositoryClient.MEGA_REPO_PLUGIN }) {
+                listOf(megaRepoGroup(scope))
+            } else {
                 val (desktop, androidOnly) = current.plugins.sortedBy { it.name.lowercase() }.partition { it.supportsDesktop }
                 // Product Sans draws "(5)" as a circled digit, so counts use a separator instead of parentheses
                 listOfNotNull(
@@ -244,6 +301,37 @@ class RepositoryScreen(private val url: String) : SearchableSettings {
             }
         }
     }
+}
+
+/** MegaRepo holds no extensions, only an Android helper that adds the community repositories */
+@Composable
+private fun megaRepoGroup(scope: CoroutineScope): Preference.PreferenceGroup {
+    var result by remember { mutableStateOf<String?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    return Preference.PreferenceGroup(
+        title = "MegaRepo",
+        preferenceItems = listOf(
+            Preference.PreferenceItem.InfoPreference(
+                "MegaRepo has no extensions of its own. Its only plugin, MegaProvider, adds all the community " +
+                        "repositories on Android. On desktop the app does that for you."
+            ),
+            Preference.PreferenceItem.CustomPreference("Add all community repositories") {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BusyOr(adding) {
+                        Button(onClick = {
+                            adding = true
+                            scope.launch {
+                                result = runCatching { "Added ${addCommunityRepositories()} community repositories" }
+                                    .getOrElse { "Could not add them: ${it.message ?: it}" }
+                                adding = false
+                            }
+                        }) { Text("Add all community repositories") }
+                    }
+                    result?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            },
+        ),
+    )
 }
 
 @Composable

@@ -164,6 +164,69 @@ class PluginTest {
         assertTrue(manager.installed.value.isEmpty())
     }
 
+    /** A short link site: known codes redirect to a repository, unknown ones to its 404 page */
+    private fun serveShortLinks(): String {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).also { this.server = it }
+        val base = "http://127.0.0.1:${server.address.port}"
+        server.createContext("/") { exchange ->
+            val location = when (exchange.requestURI.path) {
+                "/megarepo" -> "https://raw.githubusercontent.com/self-similarity/MegaRepo/builds/repo.json"
+                "/home" -> "$base/"
+                else -> "$base/404"
+            }
+            exchange.responseHeaders.add("Location", location)
+            exchange.sendResponseHeaders(301, -1)
+            exchange.close()
+        }
+        server.start()
+        return "$base/"
+    }
+
+    @Test
+    fun repositoryShortCodesAndLinksResolveLikeAndroid() = runBlocking {
+        val shortLinks = serveShortLinks()
+        val client = RepositoryClient(shortLinkHost = shortLinks, bangShortLinkHost = shortLinks)
+
+        assertEquals("https://raw.githubusercontent.com/self-similarity/MegaRepo/builds/repo.json", client.resolveRepositoryUrl(" megarepo "))
+        assertEquals("https://raw.githubusercontent.com/self-similarity/MegaRepo/builds/repo.json", client.resolveRepositoryUrl("!megarepo"))
+        assertEquals(null, client.resolveRepositoryUrl("unknown-code"))
+        assertEquals(null, client.resolveRepositoryUrl("home"))
+        assertEquals(null, client.resolveRepositoryUrl("not a code"))
+
+        assertEquals("https://example.com/repo.json", client.resolveRepositoryUrl("https://example.com/repo.json"))
+        assertEquals("https://example.com/repo.json", client.resolveRepositoryUrl("cloudstreamrepo://example.com/repo.json"))
+        assertEquals("https://example.com/repo.json", client.resolveRepositoryUrl("https://cs.repo/?https://example.com/repo.json"))
+        assertEquals("https://example.com/repo.json", client.resolveRepositoryUrl("https://cs.repo/example.com/repo.json"))
+    }
+
+    @Test
+    fun communityRepositoryListTakesBothEntryForms() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).also { this@PluginTest.server = it }
+        val body = """["https://a/repo.json", {"url":"https://b/repo.json","verified":true}, {"name":"no url"}, "https://a/repo.json"]""".toByteArray()
+        server.createContext("/repos-db.json") { it.sendResponseHeaders(200, body.size.toLong()); it.responseBody.write(body); it.close() }
+        server.start()
+
+        val repos = RepositoryClient().fetchCommunityRepositories("http://127.0.0.1:${server.address.port}/repos-db.json")
+        assertEquals(listOf("https://a/repo.json", "https://b/repo.json"), repos)
+    }
+
+    /**
+     * Resolves the real megarepo short code and reads the real community list.
+     * Needs the internet, so it only runs with CLOUDSTREAM_ONLINE_TESTS=1.
+     */
+    @Test
+    fun megarepoShortCodeAndCommunityListOnline() = runBlocking {
+        if (System.getenv("CLOUDSTREAM_ONLINE_TESTS") != "1") return@runBlocking println("Skipped, set CLOUDSTREAM_ONLINE_TESTS=1")
+        val client = RepositoryClient()
+        val url = client.resolveRepositoryUrl("megarepo")
+        println("megarepo -> $url")
+        val plugins = client.fetchPlugins(client.fetchRepository(url!!))
+        assertEquals(listOf(RepositoryClient.MEGA_REPO_PLUGIN), plugins.map { it.internalName })
+        val community = client.fetchCommunityRepositories()
+        println("${community.size} community repositories")
+        assertTrue(community.size > 10)
+    }
+
     /**
      * Installs a real plugin from the official repository and searches with it.
      * Needs the internet, so it only runs with CLOUDSTREAM_ONLINE_TESTS=1.
