@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import com.lagradost.cloudstream4.network.DesktopHttp
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.nio.file.Files
@@ -37,7 +38,7 @@ class AppUpdateException(message: String) : Exception(message)
  */
 class AppUpdater(
     private val releasesUrl: String = LATEST_RELEASE,
-    private val http: OkHttpClient = OkHttpClient.Builder()
+    private val http: OkHttpClient = DesktopHttp.client.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build(),

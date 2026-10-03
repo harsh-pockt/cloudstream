@@ -19,6 +19,7 @@ import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.SearchQuality
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream4.generated.resources.*
+import com.lagradost.cloudstream4.network.DesktopHttp
 import com.lagradost.cloudstream4.rememberAppSettings
 import com.lagradost.cloudstream4.theme.CloudStreamPrimaryColor
 import com.lagradost.cloudstream4.theme.modeToTheme
@@ -100,6 +101,12 @@ object SettingsGeneralScreen : SearchableSettings {
                         painterResource(Res.drawable.description_24px)
                     ),
                 )
+            ),
+            Preference.PreferenceItem.ListPreference(
+                preference = settings.general.dns,
+                entries = DesktopHttp.dnsProviders.mapValues { (value, name) -> if (value == 0) stringResource(Res.string.none) else name },
+                title = stringResource(Res.string.dns_pref),
+                subtitle = "%s · " + stringResource(Res.string.dns_pref_summary),
             ),
             Preference.PreferenceItem.TextPreference(
                 title = stringResource(Res.string.benene),

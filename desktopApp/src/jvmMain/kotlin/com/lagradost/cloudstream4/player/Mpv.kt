@@ -238,6 +238,16 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
         option("force-window", "yes")
         option("sub-auto", "no")
         option("drag-and-drop", "no")
+        // Memory: mpv reads up to 150 MB ahead and keeps 50 MB behind by default. This is still about a
+        // minute ahead of a 1080p stream, and enough behind to skip back without loading again
+        option("demuxer-max-bytes", "96MiB")
+        option("demuxer-max-back-bytes", "24MiB")
+        // Network: a stream that stops answering fails after 30 s instead of 60, so the next source can
+        // play, and a dropped connection is opened again where it stopped
+        option("network-timeout", "30")
+        option("stream-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=5")
+        // Links come from the extensions already: no youtube-dl lookup before every file
+        option("ytdl", "no")
         check("initialize", lib.mpv_initialize(ctx))
         eventThread = Thread(::eventLoop, "mpv-events").apply { isDaemon = true; start() }
         pending.forEach { it() }

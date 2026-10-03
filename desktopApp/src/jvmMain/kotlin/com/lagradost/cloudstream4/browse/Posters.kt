@@ -38,6 +38,7 @@ import coil3.memory.MemoryCache
 import coil3.network.NetworkHeaders
 import coil3.network.httpHeaders
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import com.lagradost.cloudstream4.network.DesktopHttp
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.serviceLoaderEnabled
@@ -52,7 +53,9 @@ import okio.Path.Companion.toOkioPath
  */
 fun desktopImageLoader(context: PlatformContext): ImageLoader = ImageLoader.Builder(context)
     .crossfade(200)
-    .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.15).build() }
+    // A fixed size: a share of the heap limit would grow with it, and decoded posters live outside the
+    // heap. 96 MB holds a few hundred posters at the size they are shown
+    .memoryCache { MemoryCache.Builder().maxSizeBytes(96L * 1024 * 1024).build() }
     .diskCache {
         DiskCache.Builder()
             .directory(AppDirs.cache.resolve("images").toOkioPath())
@@ -61,7 +64,8 @@ fun desktopImageLoader(context: PlatformContext): ImageLoader = ImageLoader.Buil
     }
     // Only this fetcher, so the Ktor one that the shared module brings in is never picked instead
     .serviceLoaderEnabled(false)
-    .components { add(OkHttpNetworkFetcherFactory()) }
+    // The app's connections and DNS, without its HTTP cache: posters have the disk cache above
+    .components { add(OkHttpNetworkFetcherFactory(callFactory = { DesktopHttp.uncached })) }
     .build()
 
 private val verticalWidth = 140.dp

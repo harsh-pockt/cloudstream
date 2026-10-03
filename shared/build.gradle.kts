@@ -55,6 +55,9 @@ kotlin {
             implementation(libs.ktor.client.java)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.okhttp)
+            implementation(libs.okhttp.dnsoverhttps)
+            // For the extensions' client, app.baseClient
+            implementation(libs.nicehttp)
         }
 
         jvmTest.dependencies {
@@ -76,4 +79,6 @@ compose.resources {
 // The Android extensions test converts and loads hundreds of extensions in one run
 tasks.withType<Test>().configureEach {
     maxHeapSize = "3g"
+    // Tests keep their files, such as the HTTP cache, away from the real app's folders
+    systemProperty("cloudstream.home", layout.buildDirectory.dir("test-home").get().asFile.absolutePath)
 }
