@@ -384,6 +384,8 @@ fun PlayerScreen(
             loading = state.loading,
             onBack = onBack,
             onRetry = if (state.exhausted) ({ viewModel.onAction(LinksAction.Retry) }) else null,
+            // Some extensions keep finding links for minutes: what is found so far can be enough
+            onSkip = if (state.loading && state.links.isNotEmpty()) ({ viewModel.onAction(LinksAction.Skip) }) else null,
             modifier = closePanel,
         )
         // The video is a native window, so nothing can be drawn over it: panels open beside it
@@ -574,6 +576,7 @@ private fun TopBar(
     loading: Boolean,
     onBack: () -> Unit,
     onRetry: (() -> Unit)?,
+    onSkip: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -597,6 +600,7 @@ private fun TopBar(
             }
         }
         if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = PlayerColors.secondary)
+        if (onSkip != null) TextButton(onClick = onSkip) { Text("Skip", color = accent()) }
         if (onRetry != null) TextButton(onClick = onRetry) { Text("Try again", color = accent()) }
     }
 }
