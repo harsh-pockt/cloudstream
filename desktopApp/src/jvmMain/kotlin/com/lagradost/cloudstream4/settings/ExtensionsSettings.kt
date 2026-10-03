@@ -381,6 +381,12 @@ object InstalledExtensionsScreen : SearchableSettings {
                 subtitle = error?.let { "Failed to load: $it" } ?: listOfNotNull(
                     "Version ${plugin.version}" + (update?.let { " · version ${it.available.version} available" } ?: ""),
                     "Android build, converted for desktop".takeIf { plugin.isAndroid },
+                    // What could not be converted throws when used, so the sources needing it fail
+                    when (plugin.disabledMethods) {
+                        0 -> null
+                        1 -> "1 part could not be converted, some sources may not work"
+                        else -> "${plugin.disabledMethods} parts could not be converted, some sources may not work"
+                    },
                     when (providers) {
                         0 -> null
                         1 -> "1 provider"
