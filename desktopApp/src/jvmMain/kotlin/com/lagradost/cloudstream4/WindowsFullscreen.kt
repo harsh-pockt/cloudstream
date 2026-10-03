@@ -17,6 +17,14 @@ private interface User32 : StdCallLibrary {
     fun GetMonitorInfoW(monitor: Pointer, info: MonitorInfo): Boolean
     fun ShowWindow(hwnd: Pointer, cmd: Int): Boolean
     fun IsZoomed(hwnd: Pointer): Boolean
+    fun SetForegroundWindow(hwnd: Pointer): Boolean
+}
+
+private val user32: User32? by lazy {
+    if (!System.getProperty("os.name").startsWith("Windows")) return@lazy null
+    runCatching { Native.load("user32", User32::class.java) }
+        .onFailure { println("ERROR User32: user32 could not be loaded: $it") }
+        .getOrNull()
 }
 
 @Structure.FieldOrder("left", "top", "right", "bottom")
@@ -51,13 +59,6 @@ object WindowsFullscreen {
     private const val SWP_FRAMECHANGED = 0x0020
     private const val SW_MAXIMIZE = 3
     private const val SW_RESTORE = 9
-
-    private val user32: User32? by lazy {
-        if (!System.getProperty("os.name").startsWith("Windows")) return@lazy null
-        runCatching { Native.load("user32", User32::class.java) }
-            .onFailure { println("ERROR WindowsFullscreen: user32 could not be loaded: $it") }
-            .getOrNull()
-    }
 
     /** Whether this platform has it, otherwise Compose's own full screen is used */
     val supported: Boolean get() = user32 != null
@@ -97,5 +98,36 @@ object WindowsFullscreen {
         user32.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER or SWP_NOACTIVATE or SWP_FRAMECHANGED)
         // Maximizing again lets Windows size it to the screen without the taskbar, as before
         if (before.maximized) user32.ShowWindow(hwnd, SW_MAXIMIZE)
+    }
+}
+
+/**
+ * Hides the whole window, gone from the screen, the taskbar and Alt+Tab, and shows it again as it
+ * was. Compose's own `visible` brings a maximized window back the size of the whole screen, with its
+ * bottom under the taskbar.
+ */
+object WindowsHide {
+    private const val SW_HIDE = 0
+    private const val SW_SHOW = 5
+
+    val supported: Boolean get() = user32 != null
+
+    var hidden = false
+        private set
+
+    fun hide(window: Window) {
+        val user32 = user32 ?: return
+        val hwnd = Native.getWindowPointer(window) ?: return
+        user32.ShowWindow(hwnd, SW_HIDE)
+        hidden = true
+    }
+
+    fun show(window: Window) {
+        val user32 = user32 ?: return
+        if (!hidden) return
+        hidden = false
+        val hwnd = Native.getWindowPointer(window) ?: return
+        user32.ShowWindow(hwnd, SW_SHOW)
+        user32.SetForegroundWindow(hwnd)
     }
 }

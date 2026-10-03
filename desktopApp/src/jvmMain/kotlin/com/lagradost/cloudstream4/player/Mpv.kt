@@ -347,6 +347,8 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
 
     fun togglePause() = whenStarted { command("cycle", "pause") }
 
+    fun pause() = whenStarted { command("set", "pause", "yes") }
+
     fun seek(seconds: Double) = whenStarted { command("seek", seconds.toString(), "relative") }
 
     fun seekTo(seconds: Double) = whenStarted { command("seek", seconds.toString(), "absolute") }
