@@ -128,6 +128,8 @@ sealed interface MpvEvent {
     data object ToggleFullscreen : MpvEvent
     /** A single click inside the video */
     data object Click : MpvEvent
+    /** The mouse's back button inside the video */
+    data object Back : MpvEvent
     data object Ended : MpvEvent
     /** The file could not be played, for example a refused or broken link */
     data class Failed(val url: String, val message: String) : MpvEvent
@@ -188,6 +190,8 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
             override fun mouseDragged(e: MouseEvent) = mouseMoved(e)
 
             override fun mouseClicked(e: MouseEvent) {
+                // The mouse's back button, as everywhere else in the app
+                if (e.button == 4) _events.trySend(MpvEvent.Back)
                 if (e.button != MouseEvent.BUTTON1) return
                 when {
                     e.clickCount == 1 -> singleClick.restart()

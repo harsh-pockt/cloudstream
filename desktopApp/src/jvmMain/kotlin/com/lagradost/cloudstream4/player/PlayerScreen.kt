@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,13 +53,14 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
@@ -105,8 +105,9 @@ private sealed interface SubtitleChoice {
  * Plays a movie or episode. The links load in the background and the best one starts on its own.
  * The bar on top shows the title and source; the bar below plays, seeks, sets the volume and opens
  * the subtitle, audio, speed and source pickers. In full screen the bars show while the mouse moves and hide after a few seconds.
- * Space pauses, the arrows seek and change volume, M mutes, F toggles full screen and Escape closes
- * an open panel or goes back. A click on the video closes an open panel, or pauses.
+ * Space or K pauses, the left and right arrows or J and L go 10 s back and forward, the up and down
+ * arrows change the volume, M mutes, F toggles full screen. Escape closes an open panel, then
+ * leaves full screen, then goes back. A click on the video closes an open panel, or pauses.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -115,6 +116,8 @@ fun PlayerScreen(
     fullscreen: Boolean,
     onBack: () -> Unit,
     onToggleFullscreen: () -> Unit,
+    /** Hands the player's key handler to the window, null when the player closes */
+    onKeys: (((KeyEvent) -> Boolean)?) -> Unit = {},
 ) {
     val lib = Mpv.library
     if (lib == null) {
@@ -128,6 +131,7 @@ fun PlayerScreen(
     var subtitleMessage by remember { mutableStateOf<String?>(null) }
     var panel by remember { mutableStateOf<Panel?>(null) }
     val currentFullscreen by rememberUpdatedState(onToggleFullscreen)
+    val currentBack by rememberUpdatedState(onBack)
 
     // Extension subtitles downloaded so far, by url, and which one is shown
     val downloaded = remember { mutableStateMapOf<String, File>() }
@@ -189,6 +193,7 @@ fun PlayerScreen(
         player.events.collect { event ->
             when (event) {
                 MpvEvent.ToggleFullscreen -> currentFullscreen()
+                MpvEvent.Back -> currentBack()
                 MpvEvent.Click -> if (panel != null) panel = null else player.togglePause()
                 is MpvEvent.Failed -> viewModel.onAction(LinksAction.Failed(event.url, event.message))
                 MpvEvent.Ended -> {
@@ -261,8 +266,29 @@ fun PlayerScreen(
         }
     }
 
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focus.requestFocus() }
+    // Keys reach the player through the window, before anything focused: the buttons that could hold
+    // the focus hide in full screen, which used to leave the keys going nowhere
+    fun onKey(event: KeyEvent): Boolean {
+        if (event.type != KeyEventType.KeyDown || event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
+        when (event.key) {
+            Key.Spacebar, Key.K -> player.togglePause()
+            Key.DirectionLeft, Key.J -> player.seek(-10.0)
+            Key.DirectionRight, Key.L -> player.seek(10.0)
+            Key.DirectionUp -> player.changeVolume(5)
+            Key.DirectionDown -> player.changeVolume(-5)
+            Key.M -> player.toggleMute()
+            Key.F -> currentFullscreen()
+            Key.Escape -> if (panel != null) panel = null else return false
+            else -> return false
+        }
+        // What the key changed shows in the bars, also in full screen
+        if (event.key != Key.Escape) activity = System.nanoTime()
+        return true
+    }
+    DisposableEffect(Unit) {
+        onKeys(::onKey)
+        onDispose { onKeys(null) }
+    }
     // Clicks on the bars outside their buttons close an open panel
     val closePanel = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { panel = null }
     Column(
@@ -270,24 +296,7 @@ fun PlayerScreen(
             .fillMaxSize()
             .background(Color.Black)
             // Moves over the bars, which the video does not see
-            .onPointerEvent(PointerEventType.Move) { pointerMoved() }
-            .focusRequester(focus)
-            .focusable()
-            .onPreviewKeyEvent {
-                if (it.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                when (it.key) {
-                    Key.Spacebar -> player.togglePause()
-                    Key.DirectionLeft -> player.seek(-10.0)
-                    Key.DirectionRight -> player.seek(10.0)
-                    Key.DirectionUp -> player.changeVolume(5)
-                    Key.DirectionDown -> player.changeVolume(-5)
-                    Key.M -> player.toggleMute()
-                    Key.F -> onToggleFullscreen()
-                    Key.Escape -> if (panel != null) panel = null else return@onPreviewKeyEvent false
-                    else -> return@onPreviewKeyEvent false
-                }
-                true
-            },
+            .onPointerEvent(PointerEventType.Move) { pointerMoved() },
     ) {
         if (showBars) TopBar(
             title = listOfNotNull(viewModel.request.title, viewModel.request.episodeLabel).joinToString(" · "),

@@ -75,8 +75,11 @@ fun main() {
         val savedWindow = remember { SavedWindowState(desktopPreferences) }
         val windowState = rememberSavedWindowState(savedWindow)
         val navigator = remember { AppNavigator() }
+        var appWindow by remember { mutableStateOf<java.awt.Window?>(null) }
         Window(
             onCloseRequest = {
+                // So the window's normal size is saved, not the whole screen
+                appWindow?.let(WindowsFullscreen::exit)
                 savedWindow.save(windowState)
                 exitApplication()
             },
@@ -85,8 +88,9 @@ fun main() {
             icon = painterResource(Res.drawable.default_icon),
             onPreviewKeyEvent = navigator::onKeyEvent,
         ) {
+            appWindow = window
             MainContent(navigator)
-            FullscreenEffect(navigator, windowState)
+            FullscreenEffect(navigator, windowState, window)
         }
     }
 }
@@ -129,12 +133,17 @@ private fun askToStartFresh(): Boolean {
     return fresh
 }
 
-/** Puts the window in full screen while the player asks for it, then back to how it was */
+/**
+ * Puts the window in full screen while the player asks for it, then back to how it was. On
+ * Windows without the title bar, elsewhere with Compose's own full screen.
+ */
 @Composable
-private fun FullscreenEffect(navigator: AppNavigator, windowState: WindowState) {
+private fun FullscreenEffect(navigator: AppNavigator, windowState: WindowState, window: java.awt.Window) {
     var before by remember { mutableStateOf(windowState.placement) }
     LaunchedEffect(navigator.fullscreen) {
-        if (navigator.fullscreen) {
+        if (WindowsFullscreen.supported) {
+            if (navigator.fullscreen) WindowsFullscreen.enter(window) else WindowsFullscreen.exit(window)
+        } else if (navigator.fullscreen) {
             before = windowState.placement
             windowState.placement = WindowPlacement.Fullscreen
         } else if (windowState.placement == WindowPlacement.Fullscreen) {
