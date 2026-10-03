@@ -13,12 +13,15 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.test.setMain
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.io.path.createDirectories
 import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.name
@@ -38,6 +41,8 @@ class AndroidExtensionsTest {
         NO_RESULTS,
         /** The site or network failed, not desktop */
         SITE_ERROR,
+        /** Every search ran past the hard limit */
+        TIMED_OUT,
         /** A class or member desktop lacks */
         MISSING_ON_DESKTOP,
         /** Loaded, but registered no provider to search with, such as extractor-only plugins */
@@ -56,12 +61,35 @@ class AndroidExtensionsTest {
         var stubbed = setOf<String>()
     }
 
+    /**
+     * Runs [block] on its own thread and gives up on it after [limitMs]. Some extensions block in
+     * code a coroutine timeout cannot stop (a socket read without a timeout, a busy loop), which
+     * once held a full run for over 90 minutes; an abandoned thread is a daemon and is left behind.
+     */
+    private fun <T> withHardLimit(limitMs: Long, what: String, block: suspend () -> T): T {
+        val future = hardLimitThreads.submit<T> { runBlocking { block() } }
+        try {
+            return future.get(limitMs, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            future.cancel(true)
+            throw HardLimitException("$what took over ${limitMs / 1000} s")
+        } catch (e: ExecutionException) {
+            throw e.cause ?: e
+        }
+    }
+
+    private class HardLimitException(message: String) : Exception(message)
+
+    private val hardLimitThreads = Executors.newCachedThreadPool { task ->
+        Thread(task, "extension-test").apply { isDaemon = true }
+    }
+
     private fun Throwable.isMissingOnDesktop(): Boolean =
         generateSequence(this) { it.cause }.any { it is LinkageError || it is AbstractMethodError || it is ClassCastException }
 
     @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     @Test
-    fun androidExtensionsWorkOnDesktop() = runBlocking {
+    fun androidExtensionsWorkOnDesktop() = runBlocking<Unit> {
         val folder = System.getenv("CLOUDSTREAM_ANDROID_EXTENSIONS") ?: return@runBlocking println("Skipped, set CLOUDSTREAM_ANDROID_EXTENSIONS")
         // Common words in a few languages and a popular title, since sites search in their own language
         val queries = System.getenv("CLOUDSTREAM_SEARCH_QUERY")?.split(',') ?: listOf("the", "a", "naruto", "love")
@@ -87,7 +115,7 @@ class AndroidExtensionsTest {
                 return@map report to null
             }
             val loaded = try {
-                PluginLoader.load(jar)
+                withHardLimit(LOAD_LIMIT_MS, "Loading") { PluginLoader.load(jar) }
             } catch (t: Throwable) {
                 report.outcome = if (t.isMissingOnDesktop()) Outcome.MISSING_ON_DESKTOP else Outcome.LOAD_FAILED
                 report.detail = "load: $t"
@@ -111,7 +139,7 @@ class AndroidExtensionsTest {
                     for (query in queries) {
                         val items = searches.withPermit {
                             try {
-                                withTimeout(30_000) { provider.search(query, 1)?.items.orEmpty() }
+                                withHardLimit(SEARCH_LIMIT_MS, "Searching") { provider.search(query, 1)?.items.orEmpty() }
                             } catch (t: Throwable) {
                                 errors += t
                                 emptyList()
@@ -124,6 +152,7 @@ class AndroidExtensionsTest {
                 report.outcome = when {
                     report.results > 0 -> Outcome.WORKS
                     errors.any { it.isMissingOnDesktop() } -> Outcome.MISSING_ON_DESKTOP
+                    errors.isNotEmpty() && errors.all { it is HardLimitException } -> Outcome.TIMED_OUT
                     errors.isNotEmpty() -> Outcome.SITE_ERROR
                     else -> Outcome.NO_RESULTS
                 }
@@ -159,5 +188,11 @@ class AndroidExtensionsTest {
         println("Report: ${out.resolve("report.json").toAbsolutePath()}")
         work.toFile().deleteRecursively()
         APIHolder.allProviders.clear()
+        hardLimitThreads.shutdownNow()
+    }
+
+    companion object {
+        private const val SEARCH_LIMIT_MS = 30_000L
+        private const val LOAD_LIMIT_MS = 60_000L
     }
 }
