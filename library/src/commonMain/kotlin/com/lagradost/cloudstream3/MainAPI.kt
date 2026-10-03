@@ -2598,7 +2598,8 @@ fun Episode.addDate(date: String?, format: String = "yyyy-MM-dd") {
                  * 2. If it has time but no offset (e.g. "2026-05-17 14:35"), fall back to device timezone
                  * 3. If it's date-only (e.g. "2026-05-17"), use start of day in device timezone
                  */
-                runCatching { components.toInstantUsingOffset().toEpochMilliseconds() }
+                // toInstantUsingOffset reads a missing offset as UTC, so only use it when one was parsed
+                runCatching { components.also { requireNotNull(it.offsetHours) }.toInstantUsingOffset().toEpochMilliseconds() }
                     .recoverCatching { components.toLocalDateTime().toInstant(TimeZone.currentSystemDefault()).toEpochMilliseconds() }
                     .getOrElse { components.toLocalDate().atStartOfDayIn(TimeZone.currentSystemDefault()).toEpochMilliseconds() }
             }
