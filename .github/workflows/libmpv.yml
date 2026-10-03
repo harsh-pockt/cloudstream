@@ -1,0 +1,166 @@
+name: libmpv
+
+# Builds libmpv-2.dll for the Windows app with shinchiro's mpv-winbuild-cmake, and keeps the complete
+# source it was built from. libmpv includes GPL parts (FFmpeg, x264 and others), so every app release
+# must come with that source. The build scripts follow each library's main branch and record nothing,
+# so the commits are written down here, after the build, from the source folders themselves.
+#
+# Run it by hand with "publish" to make a release holding the build, its source and the list of
+# versions; desktopApp/build.gradle.kts then points at that release. A pull request that changes this
+# file runs it without publishing, to check it still builds.
+
+on:
+  workflow_dispatch:
+    inputs:
+      winbuild_ref:
+        description: shinchiro/mpv-winbuild-cmake commit with the build scripts
+        default: 05a60b3cfd04e3e3b89918f4a27f3dde2935dff2
+      publish:
+        description: Publish the build and its source as a release of this repository
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/libmpv.yml
+
+permissions:
+  contents: read
+
+env:
+  WINBUILD_REF: ${{ inputs.winbuild_ref || '05a60b3cfd04e3e3b89918f4a27f3dde2935dff2' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    # shinchiro's build image, with the tools the scripts expect
+    container:
+      image: ghcr.io/shinchiro/archlinux:latest
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      name: ${{ steps.package.outputs.name }}
+    steps:
+      - name: Check out the build scripts
+        run: |
+          git config --global --add safe.directory '*'
+          git clone https://github.com/shinchiro/mpv-winbuild-cmake.git winbuild
+          git -C winbuild checkout --quiet "$WINBUILD_REF"
+          git -C winbuild log -1 --format='%H %cI %s'
+
+      - name: Reuse the toolchain of an earlier run
+        uses: actions/cache/restore@v6
+        with:
+          path: winbuild/build/install
+          key: gcc-toolchain-${{ env.WINBUILD_REF }}-${{ github.run_id }}
+          restore-keys: gcc-toolchain-${{ env.WINBUILD_REF }}-
+
+      - name: Configure and download the sources
+        working-directory: winbuild
+        run: |
+          cmake -DTARGET_ARCH=x86_64-w64-mingw32 -DSINGLE_SOURCE_LOCATION=$PWD/src_packages \
+            -DRUSTUP_LOCATION=$PWD/rustup -DENABLE_CCACHE=ON --fresh -G Ninja -B build -S .
+          ninja -C build download || true
+
+      - name: Build the toolchain
+        working-directory: winbuild
+        run: if [[ ! -f build/install/bin/cross-gcc ]]; then ninja -C build gcc && rm -rf build/toolchain; fi
+
+      - name: Save the toolchain for later runs
+        uses: actions/cache/save@v6
+        with:
+          path: winbuild/build/install
+          key: gcc-toolchain-${{ env.WINBUILD_REF }}-${{ github.run_id }}
+
+      - name: Build mpv
+        working-directory: winbuild
+        run: ninja -C build mpv
+
+      - name: Package libmpv
+        id: package
+        working-directory: winbuild
+        run: |
+          ninja -C build mpv-packaging
+          mkdir -p ../out
+          mv build/mpv-dev-x86_64-*.7z ../out/
+          name=$(basename ../out/mpv-dev-x86_64-*.7z .7z)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          (cd ../out && sha256sum "$name.7z" > "$name.7z.sha256")
+
+      # After the build, each source folder holds the commit it was built from: the scripts update a
+      # library just before building it, and not after
+      - name: Write down every version
+        working-directory: winbuild
+        run: |
+          name=${{ steps.package.outputs.name }}
+          {
+            echo "# Sources of $name.7z"
+            echo "# Built $(date -u +%Y-%m-%dT%H:%MZ) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "# Build scripts: https://github.com/shinchiro/mpv-winbuild-cmake $(git rev-parse HEAD)"
+            echo "# Container: $(cat /etc/os-release | grep ^PRETTY_NAME | cut -d= -f2) (ghcr.io/shinchiro/archlinux)"
+            echo
+            for dir in src_packages/*/; do
+              lib=$(basename "$dir")
+              if git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 && [[ "$(git -C "$dir" rev-parse --show-toplevel)" == "$(cd "$dir" && pwd)" ]]; then
+                printf '%-24s %s %s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$(git -C "$dir" rev-parse HEAD)"
+              else
+                printf '%-24s from an archive, in the source as it was unpacked\n' "$lib"
+              fi
+            done
+          } > ../out/$name-sources.txt
+          cat ../out/$name-sources.txt
+
+      # Every library's source, the build scripts with their patches, and the Rust crates the Rust
+      # libraries were built with. Git history is left out, the commits are in the list above.
+      # Split into parts below GitHub's 2 GB limit per release file
+      - name: Pack the complete source
+        working-directory: winbuild
+        run: |
+          name=${{ steps.package.outputs.name }}
+          # The build tree is done with, and the runner's disk is small
+          rm -rf build
+          df -h .
+          7z a -t7z -mx=7 -mmt=on -v1900m -xr'!.git' ../out/$name-source.7z \
+            src_packages CMakeLists.txt README.md cargo_config.in ccache_conf.in exec.in meson_cross.txt.in toolchain.cmake.in \
+            cmake packages scripts toolchain rustup/.cargo/registry/src rustup/.cargo/git/checkouts \
+            ../out/$name-sources.txt
+          ls -la ../out
+          (cd ../out && sha256sum $name-source.7z.* > $name-source.7z.sha256)
+
+      - name: Keep the build
+        uses: actions/upload-artifact@v7
+        with:
+          name: libmpv
+          path: out/
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: libmpv
+          path: out
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ needs.build.outputs.name }}
+        run: |
+          tag="libmpv-${NAME#mpv-dev-x86_64-}"
+          {
+            echo "libmpv for the Windows app, built from shinchiro/mpv-winbuild-cmake by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+            echo
+            echo "- \`$NAME.7z\`: libmpv-2.dll and its headers, which the app's build downloads"
+            echo "- \`$NAME-source.7z.*\`: the complete source it was built from (a multi-part 7z, open the .001 part)"
+            echo "- \`$NAME-sources.txt\`: every library with the commit it was built from"
+            echo
+            echo "libmpv-2.dll includes GPL parts, so it is distributed under the GNU GPL version 2 or later."
+          } > notes.md
+          gh release create "$tag" out/* --repo "$GITHUB_REPOSITORY" --title "libmpv ${NAME#mpv-dev-x86_64-}" --notes-file notes.md --prerelease
