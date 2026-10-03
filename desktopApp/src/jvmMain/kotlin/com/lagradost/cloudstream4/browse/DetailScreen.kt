@@ -44,6 +44,12 @@ import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream4.download.DownloadRequest
+import com.lagradost.cloudstream4.download.DownloadSource
+import com.lagradost.cloudstream4.download.DownloadedEpisode
+import com.lagradost.cloudstream4.download.DownloadedTitle
+import com.lagradost.cloudstream4.download.Downloads
 import com.lagradost.cloudstream4.detail.DetailAction
 import com.lagradost.cloudstream4.detail.DetailState
 import com.lagradost.cloudstream4.detail.DetailStatus
@@ -63,6 +69,7 @@ fun DetailScreen(
     onBack: () -> Unit,
     onPlay: (PlayRequest) -> Unit,
     onOpen: (apiName: String, url: String) -> Unit,
+    downloads: Downloads = Downloads.instance,
 ) {
     val state by viewModel.state.collectAsState()
     Column(Modifier.fillMaxSize()) {
@@ -75,7 +82,7 @@ fun DetailScreen(
                 Button(onClick = { viewModel.onAction(DetailAction.Retry) }) { Text("Try again") }
             }
 
-            DetailStatus.Done -> Details(state, viewModel, onPlay, onOpen)
+            DetailStatus.Done -> Details(state, viewModel, onPlay, onOpen, downloads)
         }
     }
 }
@@ -86,17 +93,38 @@ private fun Details(
     viewModel: DetailViewModel,
     onPlay: (PlayRequest) -> Unit,
     onOpen: (apiName: String, url: String) -> Unit,
+    downloads: Downloads,
 ) {
     val response = state.response ?: return
     val season = state.seasons.getOrNull(state.selectedSeason)
+    val downloadStates by downloads.states.collectAsState()
+    // A downloaded movie or episode plays its file, without finding links
+    fun play(request: PlayRequest?, episode: Episode?) {
+        request ?: return
+        val id = downloadId(state, episode)
+        val file = id?.let(downloads::file)
+        onPlay(if (file == null) request else request.copy(localFile = file.absolutePath, localSubtitles = localSubtitles(downloads, id)))
+    }
+    fun downloadButton(episode: Episode?): @Composable () -> Unit = {
+        val id = downloadId(state, episode)
+        if (id != null) DownloadButton(
+            state = downloadStates[id],
+            onStart = { downloadRequest(state, episode)?.let(downloads::start) },
+            onPause = { downloads.pause(id) },
+            onResume = { downloadRequest(state, episode)?.let(downloads::start) },
+            onDelete = { state.titleId?.let { downloads.delete(it, id) } },
+            onPlay = { play(viewModel.playRequest(episode), episode) },
+        )
+    }
     LazyColumn(contentPadding = PaddingValues(bottom = 32.dp), modifier = Modifier.fillMaxSize()) {
         item {
             Header(
                 response = response,
                 state = state,
-                onPlay = { fromStart -> viewModel.playRequest(fromStart = fromStart)?.let(onPlay) },
-                onResume = { episode -> viewModel.playRequest(episode)?.let(onPlay) },
+                onPlay = { fromStart -> play(viewModel.playRequest(fromStart = fromStart), null) },
+                onResume = { episode -> play(viewModel.playRequest(episode), episode) },
                 onBookmark = { viewModel.onAction(DetailAction.SetBookmark(it)) },
+                download = if (state.movieData != null && response.type != TvType.Live) downloadButton(null) else null,
             )
         }
 
@@ -113,7 +141,7 @@ private fun Details(
                 )
             }
             items(season.episodes) { episode ->
-                EpisodeRow(episode, state.progressOf(episode)) { viewModel.playRequest(episode)?.let(onPlay) }
+                EpisodeRow(episode, state.progressOf(episode), downloadButton(episode)) { play(viewModel.playRequest(episode), episode) }
                 HorizontalDivider(Modifier.padding(horizontal = 24.dp))
             }
         }
@@ -145,6 +173,8 @@ private fun Header(
     onPlay: (fromStart: Boolean) -> Unit,
     onResume: (com.lagradost.cloudstream3.Episode) -> Unit,
     onBookmark: (WatchType) -> Unit,
+    /** The movie's download button, null for a series or a live stream */
+    download: (@Composable () -> Unit)?,
 ) {
     Row(Modifier.padding(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
         RemoteImage(
@@ -196,6 +226,7 @@ private fun Header(
                     }
                 }
                 LibraryButton(state.bookmark, onBookmark)
+                download?.invoke()
             }
         }
     }
@@ -256,7 +287,7 @@ private fun LibraryButton(current: WatchType, onSelect: (WatchType) -> Unit) {
 }
 
 @Composable
-private fun EpisodeRow(episode: Episode, progress: PlaybackPosition?, onClick: () -> Unit) {
+private fun EpisodeRow(episode: Episode, progress: PlaybackPosition?, download: @Composable () -> Unit, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -284,5 +315,25 @@ private fun EpisodeRow(episode: Episode, progress: PlaybackPosition?, onClick: (
             progress != null && progress.positionMs > 0 -> Text("${formatTime(progress.positionMs)} / ${formatTime(progress.durationMs)}", style = MaterialTheme.typography.bodySmall)
             else -> episode.runTime?.let { Text("$it min", style = MaterialTheme.typography.bodySmall) }
         }
+        download()
     }
+}
+
+/** The id a download is saved under: the episode's, or the title's for a movie */
+private fun downloadId(state: DetailState, episode: Episode?): Int? =
+    if (episode == null) state.titleId else state.episodeIds[episode]
+
+/** What downloads an episode, or the movie when [episode] is null */
+private fun downloadRequest(state: DetailState, episode: Episode?): DownloadRequest? {
+    val response = state.response ?: return null
+    val titleId = state.titleId ?: return null
+    val id = downloadId(state, episode) ?: return null
+    val data = episode?.data ?: state.movieData ?: return null
+    // An episode without a number is numbered by its place, so two never get the same file name
+    val number = episode?.let { it.episode ?: (state.seasons.flatMap { season -> season.episodes }.indexOf(it) + 1) }
+    return DownloadRequest(
+        DownloadedTitle(titleId, response.apiName, response.url, response.name, response.type, response.posterUrl),
+        DownloadedEpisode(id, titleId, episode?.name, number, episode?.season, episode?.posterUrl ?: response.posterUrl, episode?.description),
+        DownloadSource(response.apiName, data),
+    )
 }

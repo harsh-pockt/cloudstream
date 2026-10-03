@@ -132,4 +132,7 @@
     <string name="all_subtitles_italic">Make all subtitles italic</string>
     <string name="dns_pref">DNS over HTTPS</string>
     <string name="dns_pref_summary">Useful for bypassing ISP blocks</string>
+    <string name="title_downloads">Downloads</string>
+    <string name="downloads_empty">There are currently no downloads.</string>
+    <string name="download_path_pref">Download path</string>
 </resources>

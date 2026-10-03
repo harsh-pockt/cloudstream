@@ -85,4 +85,6 @@ tasks.withType<Test>().configureEach {
     systemProperty("cloudstream.browserTests", providers.gradleProperty("browserTests").isPresent.toString())
     systemProperty("cloudstream.cloudflareTest", providers.gradleProperty("cloudflareTest").isPresent.toString())
     systemProperty("cloudstream.cloudflareUrl", providers.gradleProperty("cloudflareUrl").getOrElse(""))
+    // Downloads TorrServer and streams a public torrent, off by default: gradlew :shared:jvmTest -PtorrentTests
+    systemProperty("cloudstream.torrentTests", providers.gradleProperty("torrentTests").isPresent.toString())
 }

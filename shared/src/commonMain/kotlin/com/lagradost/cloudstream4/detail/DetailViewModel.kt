@@ -10,6 +10,7 @@ import com.lagradost.cloudstream3.LiveStreamLoadResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MovieLoadResponse
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TorrentLoadResponse
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.mvvm.Resource
@@ -37,6 +38,10 @@ data class PlayRequest(
     val data: String,
     /** Where to save progress, null when nothing is tracked */
     val tracking: PlaybackTracking? = null,
+    /** A downloaded file to play instead of finding links */
+    val localFile: String? = null,
+    /** Subtitles saved beside [localFile], their url a file path */
+    val localSubtitles: List<SubtitleFile> = emptyList(),
 )
 
 /** Where Continue watching left off: an episode, or the movie when [episode] is null */
@@ -97,6 +102,8 @@ class DetailViewModel(
     private val api: MainAPI,
     private val url: String,
     private val store: WatchStore = InMemoryWatchStore(),
+    /** Torrent titles can play */
+    private val torrents: Boolean = false,
 ) : ViewModel(), StateContainer<DetailState> by DefaultStateContainer(DetailState()),
     ActionHandler<DetailAction> {
 
@@ -185,12 +192,13 @@ class DetailViewModel(
                 movieData = when (response) {
                     is MovieLoadResponse -> response.dataUrl
                     is LiveStreamLoadResponse -> response.dataUrl
+                    is TorrentLoadResponse -> if (torrents) (response.torrent ?: response.magnet)?.takeIf { it.isNotBlank() } else null
                     else -> null
                 },
                 dubs = dubs,
                 selectedDub = dub,
                 seasons = groupSeasons(response, episodesByDub[dub].orEmpty()),
-                unsupported = if (response is TorrentLoadResponse) "Torrents cannot be played on desktop yet." else null,
+                unsupported = if (response is TorrentLoadResponse && !torrents) "Torrents cannot be played on desktop yet." else null,
                 titleId = titleId,
                 episodeIds = WatchIds.episodeIds(response, titleId),
             ))
