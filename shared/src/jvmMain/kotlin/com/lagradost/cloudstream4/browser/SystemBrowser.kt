@@ -5,14 +5,19 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.network.DesktopWebView
 import com.lagradost.cloudstream4.AppDirs
-import com.lagradost.cloudstream4.android.DesktopAndroid
+import com.lagradost.cloudstream4.player.HumanChecks
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -39,22 +44,25 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * The browser behind extensions' WebViewResolver and CloudflareKiller on desktop: Microsoft Edge,
  * which comes with Windows, or Chrome, run with its own profile in the app's cache folder and driven
- * through the DevTools protocol. Its window stays off screen, unless a page waits on Cloudflare's
- * check for a few seconds: then it shows, so the user can tick the box. The browser closes after a
- * few idle minutes, and when the app exits.
+ * through the DevTools protocol. It runs headless, without a window, and Cloudflare checks that pass
+ * by themselves are passed. A page whose check wants a box ticked fails at once, and its site is
+ * [asked]: the player leaves those sites for last, and only when nothing else plays offers to [pass]
+ * their checks, in a window. The cookies of a passed check come back here. The browser closes after
+ * a few idle minutes, and when the app exits.
  */
 class SystemBrowser(
     private val executable: File,
     private val profile: File = AppDirs.cache.resolve("browser").toFile(),
-    /** Where the window opens: off screen, unless someone needs to watch it */
-    private val hidden: Boolean = true,
-) : DesktopWebView {
+    /** Without a window. False shows the browser, to watch what a page does */
+    private val headless: Boolean = true,
+) : DesktopWebView, HumanChecks {
     private val json = jacksonObjectMapper()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val startLock = Mutex()
     private val http = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
 
-    private class Connection(val process: Process, val socket: WebSocket)
+    /** [browser] is the browser's main process, null when it could not be told */
+    private class Connection(val browser: ProcessHandle?, val socket: WebSocket)
 
     @Volatile private var connection: Connection? = null
     private val nextId = AtomicInteger(1)
@@ -63,12 +71,18 @@ class SystemBrowser(
     private val sessions = ConcurrentHashMap<String, Channel<JsonNode>>()
     private val loads = AtomicInteger(0)
     private var idleJob: Job? = null
+    /** A check per site at a time in a window: the cookies once passed, else null */
+    private val checks = ConcurrentHashMap<String, Deferred<List<JsonNode>?>>()
+    /** Sites whose check wants a person, with the page that asked and the user agent it had */
+    private val blocked = ConcurrentHashMap<String, Pair<HttpUrl, String?>>()
+    private val _asked = MutableSharedFlow<String>(extraBufferCapacity = 32)
+    override val asked = _asked.asSharedFlow()
 
     @Volatile override var userAgent: String? = null
         private set
 
     /** Called with the browser's process id before its window comes forward, which Windows must allow */
-    var onShow: ((Long) -> Unit)? = null
+    @Volatile var onShow: ((Long) -> Unit)? = null
 
     override suspend fun load(
         request: Request,
@@ -116,7 +130,7 @@ class SystemBrowser(
         events: Channel<JsonNode>,
     ) {
         call("Network.enable", session = session)
-        if (userAgent != null) call("Network.setUserAgentOverride", mapOf("userAgent" to userAgent), session)
+        useAgent(userAgent, session)
         // Pictures, fonts and media are not needed to find links, as on Android
         call("Network.setBlockedURLs", mapOf("urls" to BLOCKED), session)
         val extra = request.headers.toMap().filterKeys { it.lowercase() !in setOf("user-agent", "referer", "cookie") }
@@ -124,10 +138,10 @@ class SystemBrowser(
         val referer = request.header("Referer")
         call("Page.navigate", buildMap { put("url", request.url.toString()); if (referer != null) put("referrer", referer) }, session)
 
-        val shown = CompletableDeferred<Unit>()
-        val checker = showWhenChallenged(request, target, session, shown)
+        val deadline = Deadline(timeoutMs)
+        val checker = handleChallenge(request.url, userAgent ?: this.userAgent, session, deadline)
         try {
-            withTimeoutOrNull(timeoutMs) {
+            untilDeadline(deadline) {
                 for (event in events) {
                     if (event.path("method").asText() != "Network.requestWillBeSent") continue
                     val sent = event.path("params").path("request")
@@ -140,31 +154,118 @@ class SystemBrowser(
             }
         } finally {
             checker.cancel()
-            if (shown.isCompleted) runCatching { place(target, onScreen = false, session) }
         }
     }
 
-    /** A page still on Cloudflare's check after a few seconds needs the user: the window comes on screen */
-    private fun showWhenChallenged(request: Request, target: String, session: String, shown: CompletableDeferred<Unit>) = scope.launch {
-        delay(SHOW_AFTER_MS)
+    /** The extension's user agent, else the browser's own without "Headless", which sites refuse */
+    private suspend fun useAgent(agent: String?, session: String) {
+        (agent ?: userAgent)?.let { call("Network.setUserAgentOverride", mapOf("userAgent" to it), session) }
+    }
+
+    /** When a page gives up waiting: after its time, or earlier, once its site wants a check only a person can pass */
+    private class Deadline(val ms: Long) {
+        val ended = CompletableDeferred<Unit>()
+        fun end() {
+            ended.complete(Unit)
+        }
+    }
+
+    /** Runs [block] until it finishes, its time runs out, or the [deadline] is ended early */
+    private suspend fun untilDeadline(deadline: Deadline, block: suspend () -> Unit) = coroutineScope {
+        val work = launch { withTimeoutOrNull(deadline.ms) { block() } }
+        val stopper = launch {
+            deadline.ended.await()
+            work.cancel()
+        }
+        work.join()
+        stopper.cancel()
+    }
+
+    private suspend fun challenged(session: String): Boolean {
         val title = runCatching { evaluate("document.title", session) }.getOrNull().orEmpty()
-        if (CHALLENGE_TITLES.any { title.contains(it, ignoreCase = true) }) {
-            DesktopAndroid.toastHandler?.invoke("${request.url.host} checks you are human: tick the box in the browser window")
-            runCatching { place(target, onScreen = true, session) }
-            shown.complete(Unit)
+        return CHALLENGE_TITLES.any { title.contains(it, ignoreCase = true) }
+    }
+
+    /**
+     * A page still on Cloudflare's check after a while wants a box ticked, which a browser without a
+     * window cannot do. The page stops waiting, like a site that is down, and the site is [asked], so
+     * the user can [pass] its check once nothing else plays.
+     */
+    private fun handleChallenge(url: HttpUrl, agent: String?, session: String, deadline: Deadline) = scope.launch {
+        delay(CHALLENGE_WAIT_MS)
+        if (!challenged(session)) return@launch
+        println("INFO SystemBrowser: ${url.host} wants a human check, its links are left for last")
+        blocked[url.host] = url to agent
+        _asked.tryEmit(url.host)
+        deadline.end()
+    }
+
+    override suspend fun pass(host: String): Boolean {
+        val (url, agent) = blocked[host] ?: return false
+        // Several asking at once share one window
+        val check = checks.computeIfAbsent(host) {
+            scope.async {
+                val window = SystemBrowser(executable, profile.resolveSibling("${profile.name}-check"), headless = false)
+                window.onShow = onShow
+                window.passInWindow(url, agent)
+            }
+        }
+        val cookies = try {
+            check.await()
+        } finally {
+            checks.remove(host, check)
+        } ?: return false
+        return runCatching {
+            start()
+            call("Storage.setCookies", mapOf("cookies" to cookies.map(::cookieParam)))
+            blocked.remove(host)
+            true
+        }.getOrElse {
+            println("WARN SystemBrowser: could not use the cookies of $host's check: $it")
+            false
         }
     }
 
-    /** Moves the page's window on screen for the user, or back off screen */
-    private suspend fun place(target: String, onScreen: Boolean, session: String) {
+    /**
+     * Opens [url] in this browser's window for the user to pass the site's check, and closes it after.
+     * Returns the site's cookies once passed, or null when the window was closed or the time ran out.
+     */
+    private suspend fun passInWindow(url: HttpUrl, agent: String?): List<JsonNode>? = try {
+        start()
+        val target = call("Target.createTarget", mapOf("url" to "about:blank")).path("targetId").asText()
+        val session = call("Target.attachToTarget", mapOf("targetId" to target, "flatten" to true)).path("sessionId").asText()
+        // The cookie only counts for the user agent that passed
+        useAgent(agent, session)
+        call("Page.navigate", mapOf("url" to url.toString()), session)
         val window = call("Browser.getWindowForTarget", mapOf("targetId" to target)).path("windowId").asInt()
-        val bounds = if (onScreen) mapOf("left" to 120, "top" to 80, "width" to 900, "height" to 720) else mapOf("left" to OFF_SCREEN, "top" to OFF_SCREEN)
-        call("Browser.setWindowBounds", mapOf("windowId" to window, "bounds" to bounds + ("windowState" to "normal")))
-        if (onScreen) {
-            connection?.process?.pid()?.let { onShow?.invoke(it) }
-            call("Target.activateTarget", mapOf("targetId" to target))
-            call("Page.bringToFront", session = session)
-        }
+        call("Browser.setWindowBounds", mapOf("windowId" to window, "bounds" to mapOf("windowState" to "normal")))
+        connection?.browser?.pid()?.let { onShow?.invoke(it) }
+        call("Target.activateTarget", mapOf("targetId" to target))
+        call("Page.bringToFront", session = session)
+        withTimeoutOrNull(CHECK_TIMEOUT_MS) {
+            while (true) {
+                delay(1_000)
+                // Throws once the user closes the window
+                val title = evaluate("document.title", session).orEmpty()
+                if (title.isNotBlank() && CHALLENGE_TITLES.none { title.contains(it, ignoreCase = true) }) break
+            }
+            val domain = url.host.removePrefix("www.")
+            call("Storage.getCookies").path("cookies").filter { domain.endsWith(it.path("domain").asText().trimStart('.')) }
+        }.also { println("INFO SystemBrowser: ${url.host}'s check ${if (it == null) "was not passed in time" else "was passed"}") }
+    } catch (e: Exception) {
+        println("INFO SystemBrowser: ${url.host}'s check was not passed: $e")
+        null
+    } finally {
+        stop()
+    }
+
+    /** A cookie as Storage.getCookies gives it, in the form Storage.setCookies takes */
+    private fun cookieParam(cookie: JsonNode): Map<String, Any> = buildMap {
+        listOf("name", "value", "domain", "path").forEach { put(it, cookie.path(it).asText()) }
+        put("secure", cookie.path("secure").asBoolean())
+        put("httpOnly", cookie.path("httpOnly").asBoolean())
+        cookie.path("sameSite").takeIf { it.isTextual }?.let { put("sameSite", it.asText()) }
+        if (!cookie.path("session").asBoolean()) put("expires", cookie.path("expires").asDouble())
     }
 
     private fun toRequest(sent: JsonNode): Request? = runCatching {
@@ -200,6 +301,7 @@ class SystemBrowser(
                 val events = Channel<JsonNode>(Channel.UNLIMITED)
                 sessions[session] = events
                 try {
+                    useAgent(null, session)
                     return fetchIn(target, session, events, request)
                 } finally {
                     sessions.remove(session)
@@ -234,10 +336,10 @@ class SystemBrowser(
         // The page's last document: Cloudflare's check marks its page, and loads the real one once passed
         var document: JsonNode? = null
         var finished = false
-        val shown = CompletableDeferred<Unit>()
-        val checker = showWhenChallenged(request, target, session, shown)
+        val deadline = Deadline(FETCH_TIMEOUT_MS)
+        val checker = handleChallenge(url, userAgent, session, deadline)
         try {
-            withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+            untilDeadline(deadline) {
                 for (event in events) {
                     val params = event.path("params")
                     when (event.path("method").asText()) {
@@ -262,7 +364,6 @@ class SystemBrowser(
             }
         } finally {
             checker.cancel()
-            if (shown.isCompleted) runCatching { place(target, onScreen = false, session) }
         }
         val done = document?.takeIf { finished } ?: return null
         val response = done.path("response")
@@ -372,12 +473,12 @@ class SystemBrowser(
     }
 
     private suspend fun start() = startLock.withLock {
-        connection?.takeIf { it.process.isAlive }?.let { return }
+        connection?.takeIf { it.browser?.isAlive != false }?.let { return }
         connection = null
         profile.mkdirs()
         val portFile = profile.resolve("DevToolsActivePort")
         portFile.delete()
-        val process = ProcessBuilder(
+        val launcher = ProcessBuilder(
             executable.absolutePath,
             "--remote-debugging-port=0",
             "--user-data-dir=${profile.absolutePath}",
@@ -387,15 +488,16 @@ class SystemBrowser(
             "--disable-sync",
             "--hide-crash-restore-bubble",
             "--disable-features=msImplicitSignin,msEdgeWelcomePage",
-            if (hidden) "--window-position=$OFF_SCREEN,$OFF_SCREEN" else "--window-position=120,80",
+            if (headless) "--headless=new" else "--window-position=120,80",
             "--window-size=1100,800",
             "about:blank",
         ).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
 
-        // The browser writes its DevTools port and address once it listens
-        val lines = withTimeoutOrNull(START_TIMEOUT_MS) { devToolsAddress(portFile, process) }
+        // The browser writes its DevTools port and address once it listens. Headless Edge starts
+        // its browser as another process and the one started here exits, so it is not waited on
+        val lines = withTimeoutOrNull(START_TIMEOUT_MS) { devToolsAddress(portFile) }
         if (lines == null) {
-            process.destroyForcibly()
+            launcher.destroyForcibly()
             throw IllegalStateException("${executable.name} did not start")
         }
         val opened = CompletableDeferred<Unit>()
@@ -427,18 +529,21 @@ class SystemBrowser(
             },
         )
         withTimeout(START_TIMEOUT_MS) { opened.await() }
-        connection = Connection(process, socket)
-        userAgent = runCatching { call("Browser.getVersion").path("userAgent").asText() }.getOrNull()
+        connection = Connection(launcher.toHandle().takeIf { it.isAlive }, socket)
+        // The browser's own process, to close it if it does not close when asked
+        runCatching {
+            call("SystemInfo.getProcessInfo").path("processInfo").firstOrNull { it.path("type").asText() == "browser" }?.path("id")?.asLong()
+        }.getOrNull()?.let(ProcessHandle::of)?.orElse(null)?.let { connection = Connection(it, socket) }
+        userAgent = runCatching { call("Browser.getVersion").path("userAgent").asText().replace("Headless", "") }.getOrNull()
         println("INFO SystemBrowser: started ${executable.name}, $userAgent")
     }
 
-    private suspend fun devToolsAddress(portFile: File, process: Process): List<String>? {
-        while (process.isAlive) {
+    private suspend fun devToolsAddress(portFile: File): List<String> {
+        while (true) {
             val lines = runCatching { portFile.readLines() }.getOrNull()
             if (lines != null && lines.size >= 2) return lines
             delay(100)
         }
-        return null
     }
 
     private fun failAll(error: Throwable) {
@@ -452,9 +557,12 @@ class SystemBrowser(
         val current = connection ?: return
         connection = null
         runCatching { current.socket.send("""{"id":0,"method":"Browser.close"}""") }
-        if (!current.process.waitFor(3, TimeUnit.SECONDS)) {
-            current.process.descendants().forEach { it.destroyForcibly() }
-            current.process.destroyForcibly()
+        current.browser?.let { browser ->
+            val closed = runCatching { browser.onExit().get(3, TimeUnit.SECONDS) }.isSuccess
+            if (!closed) {
+                browser.descendants().forEach { it.destroyForcibly() }
+                browser.destroyForcibly()
+            }
         }
         current.socket.cancel()
     }
@@ -463,8 +571,10 @@ class SystemBrowser(
         (this as? ObjectNode)?.fields()?.asSequence()?.map { it.key to it.value }?.toList().orEmpty()
 
     companion object {
-        private const val OFF_SCREEN = -32000
-        private const val SHOW_AFTER_MS = 5_000L
+        /** A check that passes by itself is done by then */
+        private const val CHALLENGE_WAIT_MS = 8_000L
+        /** How long the user has to pass a check in the window */
+        private const val CHECK_TIMEOUT_MS = 3 * 60_000L
         private const val CALL_TIMEOUT_MS = 30_000L
         private const val START_TIMEOUT_MS = 20_000L
         private const val IDLE_CLOSE_MS = 3 * 60_000L
@@ -495,10 +605,15 @@ class SystemBrowser(
             return (windows + others).firstOrNull { it.isFile }
         }
 
+        /** The browser for extensions, once installed */
+        @Volatile var instance: SystemBrowser? = null
+            private set
+
         /** Installs the browser for extensions, when one is found */
         fun install(): SystemBrowser? {
             val executable = find() ?: return null.also { println("WARN SystemBrowser: no Edge or Chrome found, extensions cannot use a WebView") }
             val browser = SystemBrowser(executable)
+            instance = browser
             DesktopWebView.engine = browser
             Runtime.getRuntime().addShutdownHook(Thread { browser.stop() })
             return browser

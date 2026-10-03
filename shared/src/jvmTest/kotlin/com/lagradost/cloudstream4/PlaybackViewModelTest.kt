@@ -25,11 +25,13 @@ import com.lagradost.cloudstream4.detail.PlayRequest
 import com.lagradost.cloudstream4.library.InMemoryWatchStore
 import com.lagradost.cloudstream4.library.WatchType
 import com.lagradost.cloudstream4.library.saveProgress
+import com.lagradost.cloudstream4.player.HumanChecks
 import com.lagradost.cloudstream4.player.LinksAction
 import com.lagradost.cloudstream4.player.LinksViewModel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -55,6 +57,8 @@ private class FakeCatalog : MainAPI() {
     var slowAfter = Int.MAX_VALUE
     var links: List<Pair<String, Int>> = emptyList()
     var torrents = 0
+    /** Runs as links load, like an extractor whose site asks for a check */
+    var duringLinks: (suspend () -> Unit)? = null
 
     private fun ep(data: String, season: Int?, number: Int, title: String? = null) =
         newEpisode(data, initializer = { this.season = season; this.episode = number; this.name = title }, fix = false)
@@ -81,6 +85,7 @@ private class FakeCatalog : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
+        duringLinks?.invoke()
         subtitleCallback(newSubtitleFile("English", "https://example.invalid/en.vtt"))
         subtitleCallback(newSubtitleFile("English", "https://example.invalid/en.vtt"))
         repeat(torrents) { callback(newExtractorLink("T", "Torrent", "magnet:?xt=$it", ExtractorLinkType.MAGNET)) }
@@ -89,6 +94,18 @@ private class FakeCatalog : MainAPI() {
             callback(newExtractorLink(name, name, "https://example.invalid/$name.m3u8", ExtractorLinkType.M3U8) { this.quality = quality })
         }
         return links.isNotEmpty()
+    }
+}
+
+/** Sites that ask for a check, and the ones the user passed */
+private class FakeChecks : HumanChecks {
+    val sites = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val passed = mutableListOf<String>()
+    override val asked = sites
+
+    override suspend fun pass(host: String): Boolean {
+        passed += host
+        return true
     }
 }
 
@@ -230,6 +247,32 @@ class PlaybackViewModelTest {
         assertEquals(listOf("slow", "fast"), done.links.map { it.name })
         // The better link arriving later does not interrupt what is playing
         assertEquals("fast", done.selectedLink?.name)
+    }
+
+    @Test
+    fun sitesThatWantACheckComeLastAndAreOnlyPassedWhenAsked() {
+        val checks = FakeChecks()
+        api.links = listOf("a" to 1080)
+        api.duringLinks = { checks.sites.emit("guarded.example") }
+        val vm = LinksViewModel(api, PlayRequest("Catalog", "A movie", null, "movie-data"), 50.milliseconds, checks = checks)
+
+        // The other links play first, and nothing is asked of the user
+        val first = await(vm.state) { !it.loading }
+        assertEquals("a", first.selectedLink?.name)
+        assertEquals(listOf("guarded.example"), first.checkSites)
+        assertTrue(checks.passed.isEmpty())
+        vm.onAction(LinksAction.Failed("https://example.invalid/a.m3u8", "403"))
+        assertTrue(vm.state.value.exhausted)
+
+        // Once nothing else plays, the user passes the check, and the site's links come
+        api.duringLinks = null
+        api.links = listOf("a" to 1080, "guarded" to 720)
+        vm.onAction(LinksAction.PassChecks)
+        val after = await(vm.state) { !it.loading && it.links.size == 2 }
+        assertEquals(listOf("guarded.example"), checks.passed)
+        assertTrue(after.checkSites.isEmpty())
+        // The link that failed before is not tried again
+        assertEquals("guarded", after.selectedLink?.name)
     }
 
     @Test

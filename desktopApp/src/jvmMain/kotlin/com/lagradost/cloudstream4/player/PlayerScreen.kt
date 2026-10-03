@@ -372,6 +372,8 @@ fun PlayerScreen(
         if (showBars) TopBar(
             title = listOfNotNull(viewModel.request.title, viewModel.request.episodeLabel).joinToString(" · "),
             line = subtitleMessage ?: when {
+                state.exhausted && state.checkSites.isNotEmpty() ->
+                    "More links wait on a check that you are human" + if (state.links.isNotEmpty()) ", the other ${state.links.size} could not be played" else ""
                 state.exhausted && state.links.isEmpty() -> "No playable links found" +
                         if (state.skipped > 0) " (${state.skipped} links cannot play on desktop, such as DRM)" else ""
                 state.exhausted -> "None of the ${state.links.size} links could be played"
@@ -387,6 +389,11 @@ fun PlayerScreen(
         // The video is a native window, so nothing can be drawn over it: panels open beside it
         Row(Modifier.fillMaxWidth().weight(1f)) {
             SwingPanel(factory = { player.canvas }, modifier = Modifier.weight(1f).fillMaxHeight(), background = Color.Black)
+            if (state.exhausted && state.checkSites.isNotEmpty()) CheckPrompt(
+                sites = state.checkSites,
+                checking = state.checking,
+                onOpen = { viewModel.onAction(LinksAction.PassChecks) },
+            )
             if (askTorrent) TorrentPrompt(
                 onPlay = {
                     TorrServer.accepted = true
@@ -452,6 +459,35 @@ private fun TorrentPrompt(onPlay: () -> Unit, onSkip: () -> Unit) {
         )
         Button(onClick = onPlay, modifier = Modifier.fillMaxWidth()) { Text("Play torrent") }
         OutlinedButton(onClick = onSkip, modifier = Modifier.fillMaxWidth()) { Text("Use another source") }
+    }
+}
+
+/**
+ * Offered once nothing else plays: sites that only give their links after a check that a person has to
+ * pass, such as Cloudflare's tick box. The browser opens a window only when the user asks for it here
+ */
+@Composable
+private fun CheckPrompt(sites: List<String>, checking: Boolean, onOpen: () -> Unit) {
+    Column(
+        Modifier.width(360.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surface).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+    ) {
+        Text("Open a browser for more links?", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "${if (sites.size == 1) "This site wants" else "These sites want"} to check that you are human " +
+                "before giving their links:",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(sites.joinToString(separator = "\n"), style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "A browser window opens on each in turn. Tick the box there: the window closes by itself once the check " +
+                "is passed, and their links load here.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = onOpen, enabled = !checking, modifier = Modifier.fillMaxWidth()) {
+            Text(if (checking) "Waiting for the check…" else "Open browser")
+        }
     }
 }
 
