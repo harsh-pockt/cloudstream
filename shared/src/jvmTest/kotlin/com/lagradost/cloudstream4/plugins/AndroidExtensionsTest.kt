@@ -1,6 +1,8 @@
 package com.lagradost.cloudstream4.plugins
 
 import com.lagradost.cloudstream3.APIHolder
+import com.lagradost.cloudstream3.plugins.PluginData
+import com.lagradost.cloudstream3.plugins.PluginManager
 import com.lagradost.cloudstream4.android.DesktopAndroid
 import com.lagradost.cloudstream4.android.DexConverter
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -13,9 +15,14 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.lang.management.ManagementFactory
+import java.lang.management.MemoryType
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ExecutionException
@@ -23,8 +30,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import kotlin.io.path.createDirectories
+import kotlin.io.path.exists
 import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.name
+import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
 
@@ -55,6 +64,8 @@ class AndroidExtensionsTest {
         var outcome = Outcome.LOAD_FAILED
         var detail = ""
         var convertMillis = 0L
+        /** The most heap in use while it converted, with what was in use before */
+        var convertPeakMb = 0L
         var failedMethods = 0
         var providers = listOf<String>()
         var results = 0
@@ -78,6 +89,17 @@ class AndroidExtensionsTest {
         }
     }
 
+    /** Collects first, so the peak starts from what is really in use */
+    private fun resetHeapPeak() {
+        System.gc()
+        heapPools().forEach { it.resetPeakUsage() }
+    }
+
+    /** Pools peak at different moments, so their sum is at most this much higher than the real peak */
+    private fun heapPeakMb(): Long = heapPools().sumOf { it.peakUsage.used } / (1024 * 1024)
+
+    private fun heapPools() = ManagementFactory.getMemoryPoolMXBeans().filter { it.type == MemoryType.HEAP }
+
     private class HardLimitException(message: String) : Exception(message)
 
     private val hardLimitThreads = Executors.newCachedThreadPool { task ->
@@ -100,15 +122,25 @@ class AndroidExtensionsTest {
         val out = Path.of("build", "android-extensions").createDirectories()
         val files = Path.of(folder).listDirectoryEntries("*.cs3").sortedBy { it.name }
         println("Testing ${files.size} extensions, searching for $queries")
+        // Where each came from, as {"<file name without .cs3>": "<url>"}. Some extensions only
+        // register when the app says they were installed from their own repository
+        val sources = Path.of(folder).resolve("sources.json").takeIf { it.exists() }?.let { file ->
+            Json.parseToJsonElement(file.readText()).jsonObject.mapValues { it.value.jsonPrimitive.content }
+        }.orEmpty()
+        val installed = mutableListOf<PluginData>()
+        PluginManager.installed = { installed.toList() }
 
         // Convert and load one at a time, plugins register into one global list
         val reports = files.map { cs3 ->
             val report = Report(cs3.name.removeSuffix(".cs3"))
             val jar = work.resolve(cs3.name.removeSuffix(".cs3") + ".jar")
+            installed += PluginData(report.name, sources[report.name], true, jar.toString(), 1)
             try {
                 val start = System.nanoTime()
+                resetHeapPeak()
                 report.failedMethods = DexConverter.convert(cs3, jar).failedMethods
                 report.convertMillis = (System.nanoTime() - start) / 1_000_000
+                report.convertPeakMb = heapPeakMb()
             } catch (t: Throwable) {
                 report.outcome = Outcome.CONVERSION_FAILED
                 report.detail = t.toString()
@@ -174,6 +206,7 @@ class AndroidExtensionsTest {
                     "outcome" to JsonPrimitive(it.outcome.name),
                     "detail" to JsonPrimitive(it.detail),
                     "convertMillis" to JsonPrimitive(it.convertMillis),
+                    "convertPeakMb" to JsonPrimitive(it.convertPeakMb),
                     "failedMethods" to JsonPrimitive(it.failedMethods),
                     "providers" to JsonArray(it.providers.map(::JsonPrimitive)),
                     "results" to JsonPrimitive(it.results),
@@ -185,9 +218,11 @@ class AndroidExtensionsTest {
         val counts = all.groupingBy { it.outcome }.eachCount()
         println("Results for ${all.size} extensions:")
         Outcome.entries.forEach { println("  ${it.name}: ${counts[it] ?: 0}") }
+        all.maxByOrNull { it.convertPeakMb }?.let { println("Most heap to convert: ${it.convertPeakMb} MB, ${it.name}") }
         println("Report: ${out.resolve("report.json").toAbsolutePath()}")
         work.toFile().deleteRecursively()
         APIHolder.allProviders.clear()
+        PluginManager.installed = { emptyList() }
         hardLimitThreads.shutdownNow()
     }
 

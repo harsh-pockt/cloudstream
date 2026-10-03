@@ -78,7 +78,8 @@ compose.resources {
 }
 // The Android extensions test converts and loads hundreds of extensions in one run
 tasks.withType<Test>().configureEach {
-    maxHeapSize = "3g"
+    // -PtestHeap=1g runs them with the memory the app has
+    maxHeapSize = providers.gradleProperty("testHeap").getOrElse("3g")
     // Tests keep their files, such as the HTTP cache, away from the real app's folders
     systemProperty("cloudstream.home", layout.buildDirectory.dir("test-home").get().asFile.absolutePath)
     // Tests that start the installed Edge or Chrome, off by default: gradlew :shared:jvmTest -PbrowserTests

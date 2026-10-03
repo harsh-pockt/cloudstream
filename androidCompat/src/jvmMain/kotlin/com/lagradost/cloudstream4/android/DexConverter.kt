@@ -48,7 +48,35 @@ object DexConverter {
     private const val MAX_INSTRUCTIONS = 12_000
     private const val MAX_COST = 3_000_000L
 
+    /**
+     * How many times a conversion that ran out of memory is tried again, each time without the
+     * heaviest method left. How much memory a method needs cannot be told from its size: AniSnatch's
+     * loadLinks needs over 768 MB, while StreamCenter's loadTmdbMedia, as big and with as many try
+     * blocks, needs under 384 MB.
+     */
+    private const val OUT_OF_MEMORY_RETRIES = 3
+
     fun convert(cs3: Path, jar: Path): ConversionResult {
+        val dex = DexFileNode()
+        MultiDexFileReader.open(Files.readAllBytes(cs3)).accept(dex, READ_FLAGS)
+        var replaced = replaceHugeMethods(dex, cs3)
+        var retries = 0
+        while (true) {
+            try {
+                return ConversionResult(replaced + translate(dex, cs3, jar))
+            } catch (e: OutOfMemoryError) {
+                // What dex2jar built is unreachable now, so the memory is back
+                if (retries++ >= OUT_OF_MEMORY_RETRIES) throw e
+                val heaviest = methods(dex).maxByOrNull { cost(it.codeNode) } ?: throw e
+                println("WARNING DexConverter: Ran out of memory converting $cs3, trying again without ${heaviest.method}")
+                heaviest.codeNode = throwingCode(heaviest)
+                replaced++
+            }
+        }
+    }
+
+    /** Writes the jar, returns how many methods could not be converted */
+    private fun translate(dex: DexFileNode, cs3: Path, jar: Path): Int {
         val failed = AtomicInteger()
         val handler = object : DexExceptionHandler {
             override fun handleFileException(e: Exception) {
@@ -66,10 +94,6 @@ object DexConverter {
                 mv.visitInsn(Opcodes.ATHROW)
             }
         }
-
-        val dex = DexFileNode()
-        MultiDexFileReader.open(Files.readAllBytes(cs3)).accept(dex, READ_FLAGS)
-        failed.addAndGet(replaceHugeMethods(dex, cs3))
 
         val tmp = jar.resolveSibling("${jar.fileName}.tmp")
         tmp.deleteIfExists()
@@ -92,17 +116,20 @@ object DexConverter {
         } finally {
             tmp.deleteIfExists()
         }
-        return ConversionResult(failed.get())
+        return failed.get()
     }
+
+    private fun methods(dex: DexFileNode) = dex.clzs.orEmpty().asSequence().flatMap { it.methods.orEmpty() }.filter { it.codeNode != null }
+
+    /** Roughly how much work dex2jar has with a method */
+    private fun cost(code: DexCodeNode): Long = code.stmts.size.toLong() * (code.totalRegister + (code.tryStmts?.size ?: 0))
 
     /** Gives methods too big to convert a body that throws. Returns how many there were */
     private fun replaceHugeMethods(dex: DexFileNode, cs3: Path): Int {
         var replaced = 0
-        for (cls in dex.clzs.orEmpty()) for (method in cls.methods.orEmpty()) {
-            val code = method.codeNode ?: continue
-            val instructions = code.stmts.size
-            val cost = instructions.toLong() * (code.totalRegister + (code.tryStmts?.size ?: 0))
-            if (instructions <= MAX_INSTRUCTIONS && cost <= MAX_COST) continue
+        for (method in methods(dex)) {
+            val instructions = method.codeNode.stmts.size
+            if (instructions <= MAX_INSTRUCTIONS && cost(method.codeNode) <= MAX_COST) continue
             println("WARNING DexConverter: ${method.method} in $cs3 is too big to convert ($instructions instructions)")
             method.codeNode = throwingCode(method)
             replaced++
