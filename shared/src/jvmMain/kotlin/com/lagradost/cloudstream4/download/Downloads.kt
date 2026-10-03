@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,13 +40,25 @@ data class DownloadState(
     val total: Long = 0,
     /** Why it failed */
     val message: String? = null,
+    /** Failed because the source picked is gone: the user picks one again */
+    val pickAgain: Boolean = false,
 ) {
     val fraction: Float? get() = if (total > 0) (bytes.toFloat() / total).coerceIn(0f, 1f) else null
     val active: Boolean get() = status == DownloadStatus.Queued || status == DownloadStatus.FindingLinks || status == DownloadStatus.Downloading
 }
 
-/** What to download: an episode, or a movie, and what finds its links */
-data class DownloadRequest(val title: DownloadedTitle, val episode: DownloadedEpisode, val source: DownloadSource)
+/**
+ * What to download: an episode, or a movie, and what finds its links. [link] is the source the user
+ * picked, with the [subtitles] found beside it. Without, as when resuming, the links are found again
+ * and the download carries on with the source picked before
+ */
+data class DownloadRequest(
+    val title: DownloadedTitle,
+    val episode: DownloadedEpisode,
+    val source: DownloadSource,
+    val link: ExtractorLink? = null,
+    val subtitles: List<SubtitleFile> = emptyList(),
+)
 
 /** Finds the links and subtitles of a download, as the player does */
 fun interface LinkFinder {
@@ -53,10 +66,10 @@ fun interface LinkFinder {
 }
 
 /**
- * Downloads episodes and movies to play offline, a few at a time. Each one finds its links, then tries
- * them best quality first until one downloads; a download that stopped carries on where it was when
- * it is resumed with the same link. Subtitles in the language picked for auto-select are saved
- * beside the video, as on Android.
+ * Downloads episodes and movies to play offline, a few at a time, each from the source the user
+ * picked, as on Android: the best quality can be a file of many gigabytes. A download that stopped
+ * carries on where it was when it is resumed: its links are found again, and it goes on with the same
+ * source. Subtitles in the language picked for auto-select are saved beside the video, as on Android.
  */
 class Downloads(
     private val store: DownloadStore,
@@ -141,7 +154,9 @@ class Downloads(
         store.saveTitle(request.title)
         store.saveEpisode(request.episode, request.source)
         val before = state(id)
-        set(id, DownloadState(DownloadStatus.Queued, before?.bytes ?: 0, before?.total ?: 0))
+        // A new pick starts the file again, unless it is the same link
+        val restart = request.link != null && store.file(id)?.linkHash?.let { it != request.link.url.hashCode() } == true
+        set(id, DownloadState(DownloadStatus.Queued, if (restart) 0 else before?.bytes ?: 0, if (restart) 0 else before?.total ?: 0))
         jobs[id] = scope.launch {
             try {
                 slots.withPermit { run(request) }
@@ -186,83 +201,108 @@ class Downloads(
 
     private suspend fun run(request: DownloadRequest) {
         val id = request.episode.id
-        change(id) { copy(status = DownloadStatus.FindingLinks, message = null) }
-        val links = ArrayList<ExtractorLink>()
-        val subtitles = ArrayList<SubtitleFile>()
-        try {
-            finder.find(
-                request.source,
-                onLink = { link ->
-                    synchronized(links) {
-                        if (link !is DrmExtractorLink && Downloader.canDownload(link) && links.none { it.url == link.url }) links += link
-                    }
-                },
-                onSubtitle = { sub -> synchronized(subtitles) { if (subtitles.none { it.url == sub.url }) subtitles += sub } },
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            change(id) { copy(status = DownloadStatus.Failed, message = e.message ?: e.javaClass.simpleName) }
-            return
-        }
         val previous = store.file(id)
-        // The link it started with first, so it can carry on, then best quality first
-        val ordered = synchronized(links) { links.toList() }
-            .sortedWith(compareBy<ExtractorLink> { it.url.hashCode() != previous?.linkHash }.thenByDescending { LinksViewModel.rank(it.quality) })
-        if (ordered.isEmpty()) {
-            change(id) { copy(status = DownloadStatus.Failed, message = "No downloadable links found") }
-            return
+        val link: ExtractorLink
+        val subtitles: List<SubtitleFile>
+        if (request.link != null) {
+            link = request.link
+            subtitles = request.subtitles
+        } else {
+            change(id) { copy(status = DownloadStatus.FindingLinks, message = null, pickAgain = false) }
+            val found = try {
+                findAgain(request.source, previous)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                change(id) { copy(status = DownloadStatus.Failed, message = e.message ?: e.javaClass.simpleName) }
+                return
+            }
+            if (found == null) {
+                change(id) { copy(status = DownloadStatus.Failed, message = "The source picked before is gone, pick another", pickAgain = true) }
+                return
+            }
+            link = found.first
+            subtitles = found.second
         }
 
         val title = request.title
         val episode = request.episode
         val name = DownloadNames.fileName(title.name, episode.episode, episode.season, episode.name)
-        var lastError: String? = null
-        for (link in ordered) {
-            val same = previous != null && previous.linkHash == link.url.hashCode() && previous.file.isFile
-            var file = DownloadFile(
-                totalBytes = if (same) previous!!.totalBytes else 0,
-                root = previous?.root ?: root(),
-                relativePath = previous?.relativePath ?: DownloadNames.folder(title.type, title.name),
-                displayName = previous?.displayName ?: "$name.mp4",
-                segmentsDone = if (same) previous!!.segmentsDone else null,
-                segmentBytes = if (same) previous!!.segmentBytes else null,
-                linkHash = link.url.hashCode(),
-            )
-            store.saveFile(id, file)
-            val resume = when {
-                !same -> null
-                link.type == ExtractorLinkType.M3U8 -> previous!!.segmentsDone?.let { Downloader.Resume(it, previous.segmentBytes ?: 0) }
-                else -> Downloader.Resume(0, 0)
-            }
-            change(id) { DownloadState(DownloadStatus.Downloading, if (same) file.file.length() else 0, file.totalBytes) }
-            var saved = 0L
-            try {
-                Downloader.download(link, file.file, resume, connections()) { bytes, total, segments ->
-                    file = file.copy(totalBytes = maxOf(total, bytes), segmentsDone = segments ?: file.segmentsDone, segmentBytes = if (segments != null) bytes else file.segmentBytes)
-                    change(id) { DownloadState(DownloadStatus.Downloading, bytes, file.totalBytes) }
-                    // The store writes a whole file, so not on every update
-                    val now = System.nanoTime()
-                    if (now - saved > SAVE_EVERY_NS) {
-                        saved = now
-                        store.saveFile(id, file)
-                    }
+        val same = previous != null && previous.linkHash == link.url.hashCode() && previous.file.isFile
+        var file = DownloadFile(
+            totalBytes = if (same) previous!!.totalBytes else 0,
+            root = previous?.root ?: root(),
+            relativePath = previous?.relativePath ?: DownloadNames.folder(title.type, title.name),
+            displayName = previous?.displayName ?: "$name.mp4",
+            segmentsDone = if (same) previous!!.segmentsDone else null,
+            segmentBytes = if (same) previous!!.segmentBytes else null,
+            linkHash = link.url.hashCode(),
+            linkName = link.name,
+        )
+        store.saveFile(id, file)
+        val resume = when {
+            !same -> null
+            link.type == ExtractorLinkType.M3U8 -> previous!!.segmentsDone?.let { Downloader.Resume(it, previous.segmentBytes ?: 0) }
+            else -> Downloader.Resume(0, 0)
+        }
+        change(id) { DownloadState(DownloadStatus.Downloading, if (same) file.file.length() else 0, file.totalBytes) }
+        var saved = 0L
+        try {
+            Downloader.download(link, file.file, resume, connections()) { bytes, total, segments ->
+                file = file.copy(totalBytes = maxOf(total, bytes), segmentsDone = segments ?: file.segmentsDone, segmentBytes = if (segments != null) bytes else file.segmentBytes)
+                change(id) { DownloadState(DownloadStatus.Downloading, bytes, file.totalBytes) }
+                // The store writes a whole file, so not on every update
+                val now = System.nanoTime()
+                if (now - saved > SAVE_EVERY_NS) {
+                    saved = now
+                    store.saveFile(id, file)
                 }
-                val length = file.file.length()
-                store.saveFile(id, file.copy(totalBytes = length))
-                saveSubtitles(subtitles, file.copy(totalBytes = length))
-                change(id) { DownloadState(DownloadStatus.Done, length, length) }
-                return
-            } catch (e: CancellationException) {
-                store.saveFile(id, file)
-                throw e
-            } catch (e: Throwable) {
-                store.saveFile(id, file)
-                lastError = e.message ?: e.javaClass.simpleName
-                println("WARN Downloads: ${link.name} failed for ${title.name}: $lastError")
+            }
+            val length = file.file.length()
+            store.saveFile(id, file.copy(totalBytes = length))
+            saveSubtitles(subtitles, file.copy(totalBytes = length))
+            change(id) { DownloadState(DownloadStatus.Done, length, length) }
+            return
+        } catch (e: CancellationException) {
+            store.saveFile(id, file)
+            throw e
+        } catch (e: Throwable) {
+            store.saveFile(id, file)
+            val error = e.message ?: e.javaClass.simpleName
+            println("WARN Downloads: ${link.name} failed for ${title.name}: $error")
+            // Another source may work
+            change(id) { copy(status = DownloadStatus.Failed, message = error, pickAgain = true) }
+        }
+    }
+
+    /**
+     * The source a download started with, among the links found again: the same url, else the same
+     * name, as a link's url often changes between visits. Null when it is gone
+     */
+    private suspend fun findAgain(source: DownloadSource, previous: DownloadFile?): Pair<ExtractorLink, List<SubtitleFile>>? {
+        if (previous?.linkHash == null && previous?.linkName == null) return null
+        val subtitles = ArrayList<SubtitleFile>()
+        var byName: ExtractorLink? = null
+        var same: ExtractorLink? = null
+        coroutineScope {
+            lateinit var finding: Job
+            finding = launch {
+                finder.find(
+                    source,
+                    onLink = { link ->
+                        synchronized(subtitles) {
+                            if (link.url.hashCode() == previous.linkHash) same = link
+                            else if (byName == null && link.name == previous.linkName && downloadable(link)) byName = link
+                        }
+                        // The same link is found: no need to wait for the other extractors
+                        if (same != null) finding.cancel()
+                    },
+                    onSubtitle = { sub -> synchronized(subtitles) { if (subtitles.none { it.url == sub.url }) subtitles += sub } },
+                )
             }
         }
-        change(id) { copy(status = DownloadStatus.Failed, message = lastError) }
+        val link = synchronized(subtitles) { same ?: byName } ?: return null
+        return link to synchronized(subtitles) { subtitles.toList() }
     }
 
     /** Up to three subtitles in the language picked for auto-select, named after the video as on Android */
@@ -289,6 +329,12 @@ class Downloads(
     companion object {
         private val SUBTITLE_EXTENSIONS = setOf("vtt", "srt", "txt", "ass", "ttml", "sbv", "dfxp")
         private const val SAVE_EVERY_NS = 2_000_000_000L
+
+        /** Links that can be saved to a file: not DRM, not torrents or web pages */
+        fun downloadable(link: ExtractorLink) = link !is DrmExtractorLink && Downloader.canDownload(link)
+
+        /** Links to pick from, best quality first */
+        fun forPicking(links: List<ExtractorLink>) = links.filter(::downloadable).distinctBy { it.url }.sortedByDescending { LinksViewModel.rank(it.quality) }
 
         /** Done when within 1 KB of the full size, as on Android */
         fun isComplete(bytes: Long, total: Long) = total > 0 && bytes > 1024 && bytes + 1024 >= total
