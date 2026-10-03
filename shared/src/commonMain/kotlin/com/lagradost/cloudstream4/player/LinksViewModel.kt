@@ -51,7 +51,8 @@ sealed interface LinksAction {
  * moves on to the next best one.
  */
 class LinksViewModel(
-    private val api: MainAPI,
+    /** Null when only a downloaded file plays and its extension is not loaded */
+    private val api: MainAPI?,
     val request: PlayRequest,
     private val autoPickAfter: Duration = 6.seconds,
 ) : ViewModel(), StateContainer<LinksState> by DefaultStateContainer(LinksState()), ActionHandler<LinksAction> {
@@ -81,6 +82,18 @@ class LinksViewModel(
     private fun load() {
         loadJob?.cancel()
         autoPicking = false
+        val local = request.localFile
+        if (local != null) {
+            // A download plays at once, with the subtitles saved beside it
+            @Suppress("DEPRECATION")
+            val link = ExtractorLink(LOCAL_SOURCE, LOCAL_SOURCE, local, "", Qualities.Unknown.value, type = ExtractorLinkType.VIDEO)
+            updateState { LinksState(links = listOf(link), subtitles = request.localSubtitles, loading = false, selected = local) }
+            return
+        }
+        if (api == null) {
+            updateState { LinksState(loading = false) }
+            return
+        }
         updateState { LinksState() }
         loadJob = viewModelScope.launch {
             val picker = launch {
@@ -121,6 +134,9 @@ class LinksViewModel(
     }
 
     companion object {
+        /** The source name of a downloaded file */
+        const val LOCAL_SOURCE = "Downloaded"
+
         private fun nextLink(links: List<ExtractorLink>, failed: Map<String, String>) =
             links.firstOrNull { it.url !in failed }?.url
 

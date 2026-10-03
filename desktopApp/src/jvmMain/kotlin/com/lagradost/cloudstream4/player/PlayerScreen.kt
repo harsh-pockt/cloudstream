@@ -764,7 +764,11 @@ private fun SidePanel(
                     val track = downloaded[sub.url]?.let { file -> tracks.firstOrNull { it.isFile(file) } }
                     Choice(
                         labels.getValue(sub.url),
-                        detail = if (loadingSubtitle == sub.url) "Loading…" else listOfNotNull("From the extension", host(sub.url)).joinToString(" · "),
+                        detail = when {
+                            loadingSubtitle == sub.url -> "Loading…"
+                            !sub.url.contains("://") -> "Saved with the download"
+                            else -> listOfNotNull("From the extension", host(sub.url)).joinToString(" · ")
+                        },
                         selected = track?.selected == true,
                     ) { onSubtitle(sub) }
                 }

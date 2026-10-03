@@ -10,6 +10,7 @@ import com.lagradost.cloudstream3.LiveStreamLoadResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MovieLoadResponse
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TorrentLoadResponse
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.mvvm.Resource
@@ -37,6 +38,10 @@ data class PlayRequest(
     val data: String,
     /** Where to save progress, null when nothing is tracked */
     val tracking: PlaybackTracking? = null,
+    /** A downloaded file to play instead of finding links */
+    val localFile: String? = null,
+    /** Subtitles saved beside [localFile], their url a file path */
+    val localSubtitles: List<SubtitleFile> = emptyList(),
 )
 
 /** Where Continue watching left off: an episode, or the movie when [episode] is null */

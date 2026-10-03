@@ -48,6 +48,8 @@ import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lagradost.cloudstream4.android.DesktopAndroid
 import com.lagradost.cloudstream4.browse.DetailScreen
+import com.lagradost.cloudstream4.browse.DownloadsScreen
+import com.lagradost.cloudstream4.download.Downloads
 import com.lagradost.cloudstream4.browse.HomeScreen
 import com.lagradost.cloudstream4.browse.LibraryScreen
 import com.lagradost.cloudstream4.browse.Message
@@ -83,6 +85,7 @@ enum class Destination(
     Home(Res.string.title_home, Res.drawable.home_icon_outline_24, Res.drawable.home_icon_filled_24),
     Search(Res.string.title_search, Res.drawable.search_icon, Res.drawable.search_icon),
     Library(Res.string.library, Res.drawable.library_icon, Res.drawable.library_icon_filled),
+    Downloads(Res.string.title_downloads, Res.drawable.download_24px, Res.drawable.download_24px),
     Settings(Res.string.title_settings, Res.drawable.settings_icon_outline, Res.drawable.settings_icon_filled),
 }
 
@@ -97,7 +100,7 @@ sealed class Page : ViewModelStoreOwner {
 /**
  * Navigation for the desktop app: a rail on the left and the selected destination on the right,
  * with pages such as details and the player opened on top.
- * Ctrl+1 to Ctrl+4 switch destination, Ctrl+F opens Search, Escape, Alt+Left or the mouse's back
+ * Ctrl+1 to Ctrl+5 switch destination, Ctrl+F opens Search, Escape, Alt+Left or the mouse's back
  * button goes back. M pauses the player and hides the app, see [hidden].
  */
 class AppNavigator {
@@ -197,7 +200,7 @@ class AppNavigator {
                 select(Destination.Search)
                 return true
             }
-            val index = listOf(Key.One, Key.Two, Key.Three, Key.Four).indexOf(event.key)
+            val index = listOf(Key.One, Key.Two, Key.Three, Key.Four, Key.Five).indexOf(event.key)
             if (index >= 0) {
                 select(Destination.entries[index])
                 return true
@@ -289,6 +292,7 @@ fun AppShell(navigator: AppNavigator) {
                     Destination.Home -> HomeScreen(home, navigator::openExtensions, navigator::openDetails)
                     Destination.Search -> SearchScreen(search, navigator::openExtensions, navigator::openDetails)
                     Destination.Library -> LibraryScreen(DataStoreWatchStore.instance, navigator::openDetails)
+                    Destination.Downloads -> DownloadsScreen(Downloads.instance, navigator::play, navigator::openDetails)
                     else -> ComingSoon(navigator.destination)
                 }
                 SnackbarHost(toasts, Modifier.align(Alignment.BottomCenter).padding(16.dp))
@@ -317,8 +321,18 @@ private fun PageContent(page: Page, navigator: AppNavigator) {
         is Page.Details -> page.apiName
         is Page.Player -> page.request.apiName
     }
-    // The provider can be gone if its plugin was uninstalled while the page was open
+    // The provider can be gone if its plugin was uninstalled while the page was open. A download plays without it
     val api = remember(apiName) { APIHolder.getApiFromNameNull(apiName) }
+    if (page is Page.Player && page.request.localFile != null) {
+        PlayerScreen(
+            viewModel = viewModel { LinksViewModel(api, page.request) },
+            fullscreen = navigator.fullscreen,
+            onBack = { navigator.back() },
+            onToggleFullscreen = navigator::toggleFullscreen,
+            onKeys = { navigator.playerKeys = it },
+        )
+        return
+    }
     if (api == null) {
         Message("$apiName is not loaded", "Its extension may have been uninstalled.")
         return
