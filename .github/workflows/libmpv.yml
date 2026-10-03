@@ -253,6 +253,8 @@ jobs:
           name=${{ steps.package.outputs.name }}
           # The build tree is done with, and the runner's disk is small
           rm -rf build/packages
+          # Links into the build tree, such as compile_commands.json, now point at nothing
+          find src_packages -xtype l -print -delete
           df -h .
           exclude=()
           for lib in $(cut -d' ' -f1 ../toolchain-sources.txt); do exclude+=("-x!src_packages/$lib"); done
