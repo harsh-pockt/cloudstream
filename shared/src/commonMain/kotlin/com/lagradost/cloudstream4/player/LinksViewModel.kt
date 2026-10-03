@@ -13,6 +13,7 @@ import com.lagradost.cloudstream4.compose.DefaultStateContainer
 import com.lagradost.cloudstream4.compose.StateContainer
 import com.lagradost.cloudstream4.detail.PlayRequest
 import com.lagradost.cloudstream4.providers.loadLinksSafely
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -31,6 +32,13 @@ data class LinksState(
     val failed: Map<String, String> = emptyMap(),
     /** Links found that the player cannot use, such as DRM, or torrents where they cannot play */
     val skipped: Int = 0,
+    /**
+     * Sites whose links wait on a check only a person can pass. They come last: the user is offered
+     * to pass them once nothing else is left to play
+     */
+    val checkSites: List<String> = emptyList(),
+    /** The user is passing those checks */
+    val checking: Boolean = false,
 ) {
     val selectedLink: ExtractorLink? get() = links.firstOrNull { it.url == selected }
 
@@ -43,6 +51,8 @@ sealed interface LinksAction {
     /** The player could not play this link, so the next one is tried */
     data class Failed(val url: String, val reason: String) : LinksAction
     data object Retry : LinksAction
+    /** Pass the checks of [LinksState.checkSites], then look for links again */
+    data object PassChecks : LinksAction
 }
 
 /**
@@ -57,6 +67,8 @@ class LinksViewModel(
     private val autoPickAfter: Duration = 6.seconds,
     /** Torrents and magnet links can play, after every other link */
     private val torrents: Boolean = false,
+    /** Checks sites can ask for, which the user can pass. Without, such sites give no links */
+    private val checks: HumanChecks? = null,
 ) : ViewModel(), StateContainer<LinksState> by DefaultStateContainer(LinksState()), ActionHandler<LinksAction> {
 
     private var loadJob: Job? = null
@@ -78,10 +90,25 @@ class LinksViewModel(
             }
 
             LinksAction.Retry -> load()
+            LinksAction.PassChecks -> passChecks()
         }
     }
 
-    private fun load() {
+    private fun passChecks() {
+        val checks = checks ?: return
+        if (state.value.checking) return
+        val sites = state.value.checkSites
+        updateState { copy(checking = true) }
+        viewModelScope.launch {
+            // One window after another, each closing once its check is passed
+            val passed = sites.filter { checks.pass(it) }
+            updateState { copy(checking = false) }
+            // Their links come now. What failed already is not tried again
+            if (passed.isNotEmpty()) load(keepFailed = true)
+        }
+    }
+
+    private fun load(keepFailed: Boolean = false) {
         loadJob?.cancel()
         autoPicking = false
         val local = request.localFile
@@ -96,8 +123,14 @@ class LinksViewModel(
             updateState { LinksState(loading = false) }
             return
         }
-        updateState { LinksState() }
+        updateState { LinksState(failed = if (keepFailed) failed else emptyMap()) }
         loadJob = viewModelScope.launch {
+            // Subscribed before the extension runs, so no site is missed
+            val watcher = checks?.let { checks ->
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    checks.asked.collect { site -> updateState { if (site in checkSites) this else copy(checkSites = checkSites + site) } }
+                }
+            }
             val picker = launch {
                 // Some extractors take minutes, so do not wait for all of them once a link is in
                 state.first { it.links.isNotEmpty() }
@@ -112,6 +145,7 @@ class LinksViewModel(
                 onLink = ::addLink,
             )
             picker.cancel()
+            watcher?.cancel()
             // One update, so nobody sees loading finished with nothing picked yet
             autoPicking = true
             updateState { copy(loading = false, selected = selected ?: nextLink(links, failed)) }

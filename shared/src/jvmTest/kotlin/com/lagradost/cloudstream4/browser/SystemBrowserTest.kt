@@ -5,6 +5,9 @@ import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.network.DesktopWebView
 import com.lagradost.cloudstream3.network.WebViewResolver
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
 import java.nio.file.Files
@@ -37,6 +40,19 @@ class SystemBrowserTest {
             exchange.sendResponseHeaders(200, page.size.toLong())
             exchange.responseBody.use { it.write(page) }
         }
+        // Like Cloudflare's check: passed in a window once the test lets it, which sets a cookie
+        createContext("/guarded") { exchange ->
+            val passed = exchange.requestHeaders["Cookie"].orEmpty().any { "passed=1" in it }
+            if (!passed && guardOpen) exchange.responseHeaders.add("Set-Cookie", "passed=1; Path=/; Max-Age=600")
+            val page = when {
+                passed -> """<html><head><title>Player</title></head><body><script>fetch("/stream/guarded.m3u8");</script></body></html>"""
+                guardOpen -> "<html><head><title>Passed</title></head><body>You are human</body></html>"
+                else -> "<html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>"
+            }.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "text/html")
+            exchange.sendResponseHeaders(200, page.size.toLong())
+            exchange.responseBody.use { it.write(page) }
+        }
         createContext("/stream") { exchange ->
             exchange.sendResponseHeaders(200, 0)
             exchange.responseBody.close()
@@ -44,6 +60,7 @@ class SystemBrowserTest {
         start()
     }
     private val base = "http://127.0.0.1:${server.address.port}"
+    @Volatile private var guardOpen = false
     private val browser = if (enabled) SystemBrowser(SystemBrowser.find()!!, Files.createTempDirectory("cs-browser").toFile()) else null
 
     @AfterTest
@@ -82,6 +99,26 @@ class SystemBrowserTest {
         val heading = Regex("<title>(.*?)</title>|<h1[^>]*>(.*?)</h1>").findAll(response.text).joinToString(" / ") { it.value }
         println("With the browser: ${response.code}: $heading")
         assertEquals(200, response.code)
+    }
+
+    /** Opens a browser window for a moment, for the check */
+    @Test
+    fun aSiteThatWantsAPersonGivesUpAtOnceAndIsPassedInAWindowWhenAsked() = runBlocking {
+        if (browser == null) return@runBlocking
+        DesktopWebView.engine = browser
+        val asked = async(start = CoroutineStart.UNDISPATCHED) { browser.asked.first() }
+        val start = System.nanoTime()
+        val (blocked, _) = WebViewResolver(Regex("""guarded\.m3u8"""), timeout = 60_000).resolveUsingWebView("$base/guarded")
+        assertNull(blocked)
+        // It gave up once the check showed it wants a person, not after the whole minute
+        assertTrue(System.nanoTime() - start < 30_000_000_000, "gave up after ${(System.nanoTime() - start) / 1_000_000} ms")
+        assertEquals("127.0.0.1", asked.await())
+
+        guardOpen = true
+        assertTrue(browser.pass("127.0.0.1"))
+        // The cookie of the passed check came back to the browser without a window
+        val (found, _) = WebViewResolver(Regex("""guarded\.m3u8"""), timeout = 30_000).resolveUsingWebView("$base/guarded")
+        assertNotNull(found, "the page's request after the check")
     }
 
     @Test
