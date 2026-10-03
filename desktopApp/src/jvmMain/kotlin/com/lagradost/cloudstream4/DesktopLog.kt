@@ -3,7 +3,6 @@ package com.lagradost.cloudstream4
 import java.io.BufferedOutputStream
 import java.io.FileOutputStream
 import java.io.OutputStream
-import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
@@ -27,8 +26,9 @@ object DesktopLog {
             // Buffered: the timestamps are added a byte at a time, which would otherwise mean a write to
             // disk per byte. Both streams flush at the end of every line, so the log stays current
             val log = TimestampedOutputStream(BufferedOutputStream(FileOutputStream(file.toFile())))
-            System.setOut(PrintStream(TeeOutputStream(System.out, log), true, Charsets.UTF_8))
-            System.setErr(PrintStream(TeeOutputStream(System.err, log), true, Charsets.UTF_8))
+            // Without NiceHttp's trace for every cancelled request, see QuietPrintStream
+            System.setOut(QuietPrintStream(TeeOutputStream(System.out, log)))
+            System.setErr(QuietPrintStream(TeeOutputStream(System.err, log)))
         } catch (t: Throwable) {
             // Logging must never stop the app from starting
             System.err.println("Could not create log file in $dir: $t")
