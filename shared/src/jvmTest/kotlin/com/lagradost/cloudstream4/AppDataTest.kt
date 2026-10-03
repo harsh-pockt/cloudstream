@@ -118,4 +118,20 @@ class AppDataTest {
         assertEquals("abc123", release.sha256)
         assertNull(AppUpdater.parseRelease("""{"tag_name":"v1","assets":[]}"""), "No installer, no update")
     }
+
+    @Test
+    fun theNewestAppReleaseIsPickedIncludingPreReleases() {
+        fun release(tag: String, prerelease: Boolean = true, draft: Boolean = false, msi: Boolean = true) =
+            """{"tag_name":"$tag","prerelease":$prerelease,"draft":$draft,"html_url":"https://x/$tag","assets":[""" +
+                (if (msi) """{"name":"CloudStream.msi","browser_download_url":"https://x/$tag.msi"}""" else "") + "]}"
+        val list = listOf(
+            release("libmpv-20261003-git-3186d369f9"),
+            release("v4.10.0", draft = true),
+            release("v4.8.1", prerelease = false),
+            release("v4.9.0"),
+            release("v4.9.1", msi = false),
+        ).joinToString(",", "[", "]")
+        assertEquals("4.9.0", AppUpdater.newestRelease(list)?.version)
+        assertNull(AppUpdater.newestRelease("[]"))
+    }
 }
