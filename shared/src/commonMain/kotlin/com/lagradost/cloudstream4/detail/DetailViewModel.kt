@@ -102,6 +102,8 @@ class DetailViewModel(
     private val api: MainAPI,
     private val url: String,
     private val store: WatchStore = InMemoryWatchStore(),
+    /** Torrent titles can play */
+    private val torrents: Boolean = false,
 ) : ViewModel(), StateContainer<DetailState> by DefaultStateContainer(DetailState()),
     ActionHandler<DetailAction> {
 
@@ -190,12 +192,13 @@ class DetailViewModel(
                 movieData = when (response) {
                     is MovieLoadResponse -> response.dataUrl
                     is LiveStreamLoadResponse -> response.dataUrl
+                    is TorrentLoadResponse -> if (torrents) (response.torrent ?: response.magnet)?.takeIf { it.isNotBlank() } else null
                     else -> null
                 },
                 dubs = dubs,
                 selectedDub = dub,
                 seasons = groupSeasons(response, episodesByDub[dub].orEmpty()),
-                unsupported = if (response is TorrentLoadResponse) "Torrents cannot be played on desktop yet." else null,
+                unsupported = if (response is TorrentLoadResponse && !torrents) "Torrents cannot be played on desktop yet." else null,
                 titleId = titleId,
                 episodeIds = WatchIds.episodeIds(response, titleId),
             ))

@@ -23,7 +23,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -87,6 +89,9 @@ import com.lagradost.cloudstream4.library.DataStoreWatchStore
 import com.lagradost.cloudstream4.library.saveProgress
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream4.torrent.TorrServer
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import java.io.File
@@ -153,17 +158,53 @@ fun PlayerScreen(
     val playedOnLink = remember { doubleArrayOf(0.0, -1.0) }
     val currentState by rememberUpdatedState(state)
 
+    // Torrents stream through TorrServer, once the user agreed to it this session: mpv plays the
+    // stream's url, which failures are reported back from to the torrent's own link
+    val torrents = TorrServer.instance
+    var torrentAccepted by remember { mutableStateOf(TorrServer.accepted) }
+    var torrentStatus by remember { mutableStateOf<String?>(null) }
+    val torrentLinks = remember { HashMap<String, String>() }
+    val torrentHashes = remember { mutableSetOf<String>() }
+    DisposableEffect(Unit) {
+        onDispose {
+            val hashes = torrentHashes.toList()
+            @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+            kotlinx.coroutines.GlobalScope.launch { hashes.forEach { torrents.drop(it) } }
+        }
+    }
+
     // A new link was picked, by hand or because the last one failed. The subtitle picked stays on
     val selected = state.selectedLink
-    LaunchedEffect(selected?.url) {
-        if (selected == null) return@LaunchedEffect
+    val askTorrent = selected != null && TorrServer.isTorrent(selected) && !torrentAccepted
+    LaunchedEffect(selected?.url, torrentAccepted) {
+        if (selected == null || askTorrent) return@LaunchedEffect
         playedOnLink[0] = 0.0
         playedOnLink[1] = -1.0
+        val playing = if (TorrServer.isTorrent(selected)) {
+            try {
+                if (!torrents.installed) torrents.install { done, total ->
+                    torrentStatus = if (total > 0) "Downloading TorrServer ${done * 100 / total}%" else "Downloading TorrServer"
+                }
+                torrentStatus = "Connecting to peers…"
+                val stream = torrents.stream(selected)
+                torrentHashes += stream.hash
+                torrentLinks[stream.url] = selected.url
+                @Suppress("DEPRECATION")
+                ExtractorLink(selected.source, selected.name, stream.url, "", selected.quality, type = ExtractorLinkType.VIDEO)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                viewModel.onAction(LinksAction.Failed(selected.url, e.message ?: "The torrent could not start"))
+                return@LaunchedEffect
+            } finally {
+                torrentStatus = null
+            }
+        } else selected
         val choice = subtitleChoice
         val subtitles = state.subtitles.mapNotNull { sub ->
             downloaded[sub.url]?.let { MpvSubtitle(it, sub.lang, select = choice == SubtitleChoice.Extension(sub.url)) }
         }
-        player.play(selected, playedTo[0].takeIf { it > 0 }?.let { it / 1000.0 }, subtitles)
+        player.play(playing, playedTo[0].takeIf { it > 0 }?.let { it / 1000.0 }, subtitles)
         if (choice == SubtitleChoice.Off) player.hideSubtitlesWhenLoaded()
     }
     // In full screen the bars show on mouse moves and hide once the mouse rests, unless a panel is open
@@ -196,7 +237,7 @@ fun PlayerScreen(
                 MpvEvent.ToggleFullscreen -> currentFullscreen()
                 MpvEvent.Back -> currentBack()
                 MpvEvent.Click -> if (panel != null) panel = null else player.togglePause()
-                is MpvEvent.Failed -> viewModel.onAction(LinksAction.Failed(event.url, event.message))
+                is MpvEvent.Failed -> viewModel.onAction(LinksAction.Failed(torrentLinks[event.url] ?: event.url, event.message))
                 MpvEvent.Ended -> {
                     val url = currentState.selected
                     // A file that stops within seconds of starting is broken: it must not count as watched
@@ -228,6 +269,8 @@ fun PlayerScreen(
 
     // While links are found and the video opens or buffers, a spinner turns over the video
     val indicator = when {
+        torrentStatus != null -> torrentStatus
+        askTorrent -> null
         state.exhausted -> null
         state.selected == null -> if (state.links.isEmpty()) "Finding links…" else "Finding links · ${state.links.size} found"
         status.buffering -> status.bufferPercent?.takeIf { it in 1..99 }?.let { "Buffering $it%" } ?: "Loading…"
@@ -330,7 +373,7 @@ fun PlayerScreen(
             title = listOfNotNull(viewModel.request.title, viewModel.request.episodeLabel).joinToString(" · "),
             line = subtitleMessage ?: when {
                 state.exhausted && state.links.isEmpty() -> "No playable links found" +
-                        if (state.skipped > 0) " (${state.skipped} torrent or DRM links cannot play on desktop)" else ""
+                        if (state.skipped > 0) " (${state.skipped} links cannot play on desktop, such as DRM)" else ""
                 state.exhausted -> "None of the ${state.links.size} links could be played"
                 state.selected == null -> "Finding links… ${state.links.size} found"
                 else -> state.selectedLink?.let(LinksViewModel::label)
@@ -344,6 +387,13 @@ fun PlayerScreen(
         // The video is a native window, so nothing can be drawn over it: panels open beside it
         Row(Modifier.fillMaxWidth().weight(1f)) {
             SwingPanel(factory = { player.canvas }, modifier = Modifier.weight(1f).fillMaxHeight(), background = Color.Black)
+            if (askTorrent) TorrentPrompt(
+                onPlay = {
+                    TorrServer.accepted = true
+                    torrentAccepted = true
+                },
+                onSkip = { selected?.let { viewModel.onAction(LinksAction.Failed(it.url, "Torrent not played")) } },
+            )
             val open = panel
             if (open != null && showBars) SidePanel(
                 panel = open,
@@ -375,6 +425,33 @@ fun PlayerScreen(
             onToggleFullscreen = onToggleFullscreen,
             modifier = closePanel,
         )
+    }
+}
+
+/**
+ * Asks before the first torrent of the session, as the Android app does: playing one shares it with
+ * other people, who see the user's IP address, and needs TorrServer the first time
+ */
+@Composable
+private fun TorrentPrompt(onPlay: () -> Unit, onSkip: () -> Unit) {
+    Column(
+        Modifier.width(360.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surface).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+    ) {
+        Text("Play a torrent?", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "This source is a torrent. It plays while it downloads from other people sharing it, and while it " +
+                "plays your connection shares it too: they can see your IP address.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (!TorrServer.instance.installed) Text(
+            "The first time, CloudStream downloads TorrServer (63 MB, github.com/YouROK/TorrServer) to stream it. " +
+                "Windows may then ask whether TorrServer can use the network: it plays either way, Allow lets more people connect.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = onPlay, modifier = Modifier.fillMaxWidth()) { Text("Play torrent") }
+        OutlinedButton(onClick = onSkip, modifier = Modifier.fillMaxWidth()) { Text("Use another source") }
     }
 }
 

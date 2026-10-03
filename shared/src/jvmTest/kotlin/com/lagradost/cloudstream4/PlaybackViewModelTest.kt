@@ -175,6 +175,27 @@ class PlaybackViewModelTest {
     }
 
     @Test
+    fun whereTorrentsCanPlayTheyComeAfterEveryOtherLink() {
+        api.torrents = 2
+        api.links = listOf("low" to Qualities.P360.value)
+        val vm = LinksViewModel(api, PlayRequest("Catalog", "A movie", null, "movie-data"), 50.milliseconds, torrents = true)
+        val state = await(vm.state) { !it.loading }
+
+        assertEquals(listOf("low", "Torrent", "Torrent"), state.links.map { it.name })
+        assertEquals("low", state.selectedLink?.name)
+        assertEquals(0, state.skipped)
+
+        val title = await(DetailViewModel(api, "https://example.invalid/torrent", torrents = true).state) { it.status == DetailStatus.Done }
+        assertNull(title.unsupported)
+        assertEquals("magnet:?xt=x", title.movieData)
+        // The title's magnet plays even when the extension gives no link for it
+        api.torrents = 0
+        api.links = emptyList()
+        val magnet = LinksViewModel(api, PlayRequest("Catalog", "A torrent", null, "magnet:?xt=x"), 50.milliseconds, torrents = true)
+        assertEquals("magnet:?xt=x", await(magnet.state) { !it.loading }.selectedLink?.url)
+    }
+
+    @Test
     fun aFailedLinkMovesOnToTheNextUntilNoneAreLeft() {
         val vm = links("a" to 1080, "b" to 720)
         await(vm.state) { !it.loading }
