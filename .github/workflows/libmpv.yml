@@ -45,6 +45,9 @@ jobs:
       - name: Check out the build scripts
         run: |
           git config --global --add safe.directory '*'
+          # The scripts apply their patches with git am, which needs a committer
+          git config --global user.name "github-actions"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git clone https://github.com/shinchiro/mpv-winbuild-cmake.git winbuild
           git -C winbuild checkout --quiet "$WINBUILD_REF"
           git -C winbuild log -1 --format='%H %cI %s'
@@ -89,7 +92,8 @@ jobs:
           (cd ../out && sha256sum "$name.7z" > "$name.7z.sha256")
 
       # After the build, each source folder holds the commit it was built from: the scripts update a
-      # library just before building it, and not after
+      # library just before building it, and not after. Where they patch a library with git am, the
+      # patches sit on top as commits of their own: the list names the library's commit under them
       - name: Write down every version
         working-directory: winbuild
         run: |
@@ -103,7 +107,10 @@ jobs:
             for dir in src_packages/*/; do
               lib=$(basename "$dir")
               if git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 && [[ "$(git -C "$dir" rev-parse --show-toplevel)" == "$(cd "$dir" && pwd)" ]]; then
-                printf '%-24s %s %s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$(git -C "$dir" rev-parse HEAD)"
+                base=$(git -C "$dir" merge-base HEAD '@{u}' 2> /dev/null || git -C "$dir" rev-parse HEAD)
+                patches=$(git -C "$dir" rev-list --count "$base..HEAD")
+                printf '%-24s %s %s%s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$base" \
+                  "$([[ $patches -gt 0 ]] && echo " + $patches patches from packages/")"
               else
                 printf '%-24s from an archive, in the source as it was unpacked\n' "$lib"
               fi
