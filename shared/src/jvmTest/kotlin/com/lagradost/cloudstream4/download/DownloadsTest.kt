@@ -22,7 +22,6 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -77,8 +76,8 @@ class DownloadsTest {
         dir.deleteRecursively()
     }
 
-    private fun link(path: String, type: ExtractorLinkType = ExtractorLinkType.VIDEO) = runBlocking {
-        newExtractorLink("Test", "Test", "$base$path", type) { quality = 1080 }
+    private fun link(path: String, type: ExtractorLinkType = ExtractorLinkType.VIDEO, name: String = "Test", quality: Int = 1080) = runBlocking {
+        newExtractorLink("Test", name, "$base$path", type) { this.quality = quality }
     }
 
     @Test
@@ -125,19 +124,17 @@ class DownloadsTest {
     }
 
     @Test
-    fun downloadsFromTheFoundLinksAndKeepsTheAndroidKeys() = runBlocking {
+    fun downloadsThePickedSourceAndKeepsTheAndroidKeys() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val root = File(dir, "Downloads")
-        val finder = LinkFinder { _, onLink, onSubtitle ->
-            onLink(link("/page.mp4").apply { quality = 2160 })
-            onLink(link("/video.mp4"))
-            onLink(link("/stream.m3u8", ExtractorLinkType.MAGNET))
-            onSubtitle(SubtitleFile("English", "$base/sub.vtt"))
-        }
+        // Only for resuming: the picked source downloads without finding links again
+        val finder = LinkFinder { _, _, _ -> error("not needed") }
         val downloads = Downloads(DownloadStore(), scope, finder, root = { root }, subtitleLanguage = { "en" })
         val title = DownloadedTitle(7, "Test", "$base/show", "A show", TvType.TvSeries, null)
         val episode = DownloadedEpisode(70, 7, "Pilot", 1, 1, null, null)
-        downloads.start(DownloadRequest(title, episode, DownloadSource("Test", "data")))
+        downloads.start(
+            DownloadRequest(title, episode, DownloadSource("Test", "data"), link("/video.mp4"), listOf(SubtitleFile("English", "$base/sub.vtt"))),
+        )
         val done = withTimeout(20_000) { downloads.states.first { it[70]?.status == DownloadStatus.Done || it[70]?.status == DownloadStatus.Failed } }
         assertEquals(DownloadStatus.Done, done[70]?.status, done[70]?.message)
 
@@ -153,11 +150,86 @@ class DownloadsTest {
         assertEquals(DownloadStatus.Done, again.state(70)?.status)
         assertTrue(again.canResume(7, 70))
 
+        val subtitle = File(root, "TVSeries/A show/Season 1 Episode 1 - Pilot English.vtt")
+        assertTrue(subtitle.exists())
         again.delete(7, 70)
-        withTimeout(5_000) { while (file.exists()) kotlinx.coroutines.delay(50) }
-        assertFalse(File(root, "TVSeries/A show/Season 1 Episode 1 - Pilot English.vtt").exists())
+        // The files go in the background, the video first
+        withTimeout(5_000) { while (file.exists() || subtitle.exists()) kotlinx.coroutines.delay(50) }
         assertNull(again.state(70))
         assertTrue(again.titles().isEmpty())
+        scope.cancel()
+    }
+
+    @Test
+    fun theSourcesToPickFromAreDownloadableOnesBestFirst() {
+        val picked = Downloads.forPicking(
+            listOf(
+                link("/a.mp4", quality = 720),
+                link("/t", ExtractorLinkType.MAGNET, quality = 2160),
+                link("/b.m3u8", ExtractorLinkType.M3U8, quality = 1080),
+                link("/a.mp4", quality = 720),
+            ),
+        )
+        assertEquals(listOf("$base/b.m3u8", "$base/a.mp4"), picked.map { it.url })
+    }
+
+    @Test
+    fun aPickedSourceThatFailsAsksForAnotherInsteadOfTakingOne() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val finder = LinkFinder { _, onLink, _ -> onLink(link("/video.mp4", quality = 2160)) }
+        val downloads = Downloads(DownloadStore(), scope, finder, root = { File(dir, "Downloads") })
+        val title = DownloadedTitle(8, "Test", "$base/film", "A film", TvType.Movie, null)
+        val movie = DownloadedEpisode(8, 8, null, null, null, null, null)
+        downloads.start(DownloadRequest(title, movie, DownloadSource("Test", "data"), link("/page.mp4")))
+        val failed = withTimeout(10_000) { downloads.states.first { it[8]?.status == DownloadStatus.Failed } }[8]!!
+        assertTrue(failed.pickAgain)
+        assertNull(downloads.file(8))
+        scope.cancel()
+    }
+
+    @Test
+    fun resumingCarriesOnWithThePickedSourceFoundByItsName() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val root = File(dir, "Downloads")
+        var mirror = true
+        // The source's url changed since it was picked, and a better quality is found too
+        val finder = LinkFinder { _, onLink, _ ->
+            onLink(link("/stream.m3u8", ExtractorLinkType.M3U8, name = "Big", quality = 2160))
+            if (mirror) onLink(link("/video.mp4?token=new", name = "Mirror A", quality = 720))
+        }
+        val store = DownloadStore()
+        val title = DownloadedTitle(9, "Test", "$base/film2", "Another film", TvType.Movie, null)
+        val movie = DownloadedEpisode(9, 9, null, null, null, null, null)
+        val request = DownloadRequest(title, movie, DownloadSource("Test", "data"))
+        store.saveTitle(title)
+        store.saveEpisode(movie, request.source)
+        val partial = DownloadFile(video.size.toLong(), root, "Movies", "Another film.mp4", linkHash = "$base/video.mp4?token=old".hashCode(), linkName = "Mirror A")
+        partial.folder.mkdirs()
+        partial.file.writeBytes(video.copyOf(100_000))
+        store.saveFile(9, partial)
+
+        val downloads = Downloads(store, scope, finder, root = { root })
+        assertEquals(DownloadStatus.Paused, downloads.state(9)?.status)
+        downloads.start(request)
+        val done = withTimeout(20_000) { downloads.states.first { it[9]?.status == DownloadStatus.Done || it[9]?.status == DownloadStatus.Failed } }[9]!!
+        assertEquals(DownloadStatus.Done, done.status, done.message)
+        // Another url is another file, so it started again, and not with the bigger quality
+        assertContentEquals(video, partial.file.readBytes())
+        assertTrue(segmentHits.isEmpty())
+
+        // Gone from the extension: the user picks another, nothing else is taken
+        downloads.delete(9, 9)
+        withTimeout(5_000) { while (partial.file.exists()) kotlinx.coroutines.delay(50) }
+        store.saveTitle(title)
+        store.saveEpisode(movie, request.source)
+        partial.file.writeBytes(video.copyOf(100_000))
+        store.saveFile(9, partial)
+        mirror = false
+        val again = Downloads(store, scope, finder, root = { root })
+        again.start(request)
+        val gone = withTimeout(10_000) { again.states.first { it[9]?.status == DownloadStatus.Failed } }[9]!!
+        assertTrue(gone.pickAgain)
+        assertTrue(segmentHits.isEmpty())
         scope.cancel()
     }
 }

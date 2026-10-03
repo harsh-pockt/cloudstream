@@ -48,6 +48,8 @@ data class DownloadFile(
     val segmentBytes: Long? = null,
     /** The url hash of the link it came from: carrying on with another link would mix two files */
     val linkHash: Int? = null,
+    /** The name of the source the user picked, to find it again when its url has changed */
+    val linkName: String? = null,
 ) {
     val folder: File get() = if (relativePath.isBlank()) root else root.resolve(relativePath)
     val file: File get() = folder.resolve(displayName)
@@ -98,6 +100,8 @@ class DownloadStore(private val context: Context = DesktopAndroid.application) {
         @JsonProperty("linkHash") val linkHash: Int? = null,
         /** Desktop only, Android ignores it */
         @JsonProperty("segmentBytes") val segmentBytes: Long? = null,
+        /** Desktop only */
+        @JsonProperty("linkName") val linkName: String? = null,
     )
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -142,7 +146,7 @@ class DownloadStore(private val context: Context = DesktopAndroid.application) {
     fun saveFile(id: Int, file: DownloadFile) {
         context.setKey(
             "$INFO/$id",
-            FileInfo(file.totalBytes, file.relativePath, file.displayName, file.segmentsDone?.toString(), file.root.absolutePath, file.linkHash, file.segmentBytes),
+            FileInfo(file.totalBytes, file.relativePath, file.displayName, file.segmentsDone?.toString(), file.root.absolutePath, file.linkHash, file.segmentBytes, file.linkName),
         )
     }
 
@@ -150,7 +154,7 @@ class DownloadStore(private val context: Context = DesktopAndroid.application) {
         val info = context.getKey("$INFO/$id", FileInfo::class.java) ?: return null
         // Android keeps a content:// uri or nothing for its own Downloads folder, which desktop cannot use
         val root = info.basePath?.takeUnless { it.isBlank() || it.startsWith("content:") }?.let(::File) ?: return null
-        return DownloadFile(info.totalBytes, root, info.relativePath, info.displayName, info.extraInfo?.toIntOrNull(), info.segmentBytes, info.linkHash)
+        return DownloadFile(info.totalBytes, root, info.relativePath, info.displayName, info.extraInfo?.toIntOrNull(), info.segmentBytes, info.linkHash, info.linkName)
     }
 
     /** Forgets the file and the episode. The title stays, Continue watching may use it */

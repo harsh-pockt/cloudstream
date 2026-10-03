@@ -107,14 +107,27 @@ private fun Details(
     }
     fun downloadButton(episode: Episode?): @Composable () -> Unit = {
         val id = downloadId(state, episode)
-        if (id != null) DownloadButton(
-            state = downloadStates[id],
-            onStart = { downloadRequest(state, episode)?.let(downloads::start) },
-            onPause = { downloads.pause(id) },
-            onResume = { downloadRequest(state, episode)?.let(downloads::start) },
-            onDelete = { state.titleId?.let { downloads.delete(it, id) } },
-            onPlay = { play(viewModel.playRequest(episode), episode) },
-        )
+        val request = downloadRequest(state, episode)
+        // The source is picked first, as on Android
+        var picking by remember { mutableStateOf(false) }
+        if (id != null && request != null) {
+            DownloadButton(
+                state = downloadStates[id],
+                onStart = { picking = true },
+                onPause = { downloads.pause(id) },
+                onResume = { downloads.start(request) },
+                onDelete = { state.titleId?.let { downloads.delete(it, id) } },
+                onPlay = { play(viewModel.playRequest(episode), episode) },
+            )
+            if (picking) DownloadSourcePicker(
+                source = request.source,
+                onPick = { link, subtitles ->
+                    picking = false
+                    downloads.start(request.copy(link = link, subtitles = subtitles))
+                },
+                onDismiss = { picking = false },
+            )
+        }
     }
     LazyColumn(contentPadding = PaddingValues(bottom = 32.dp), modifier = Modifier.fillMaxSize()) {
         item {

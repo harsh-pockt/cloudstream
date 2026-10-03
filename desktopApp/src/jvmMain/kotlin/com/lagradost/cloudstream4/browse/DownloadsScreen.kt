@@ -103,7 +103,12 @@ fun DownloadsScreen(
                         state = state,
                         onPlay = { downloadedPlayRequest(downloads, title, episode)?.let(onPlay) },
                         onPause = { downloads.pause(episode.id) },
-                        onResume = if (downloads.canResume(title.id, episode.id)) ({ downloads.resume(title.id, episode.id) }) else null,
+                        onResume = when {
+                            // Another source is picked on the title's page
+                            state.pickAgain -> ({ openDetails(title.apiName, title.url) })
+                            downloads.canResume(title.id, episode.id) -> ({ downloads.resume(title.id, episode.id) })
+                            else -> null
+                        },
                         onDelete = { downloads.delete(title.id, episode.id) },
                     )
                 }
@@ -184,6 +189,8 @@ fun DownloadButton(
     onResume: () -> Unit,
     onDelete: () -> Unit,
     onPlay: () -> Unit,
+    /** Picks another source, starting the file again */
+    onPick: () -> Unit = onStart,
 ) {
     var menu by remember { mutableStateOf(false) }
     Box {
@@ -217,8 +224,11 @@ fun DownloadButton(
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             state?.let { Text(statusText(it), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
             if (state?.status == DownloadStatus.Done) DropdownMenuItem(text = { Text("Play downloaded file") }, onClick = { menu = false; onPlay() })
-            if (state?.status == DownloadStatus.Paused || state?.status == DownloadStatus.Failed) {
+            if (state?.status == DownloadStatus.Paused || (state?.status == DownloadStatus.Failed && !state.pickAgain)) {
                 DropdownMenuItem(text = { Text(if (state.status == DownloadStatus.Failed) "Try again" else "Resume") }, onClick = { menu = false; onResume() })
+            }
+            if (state?.status == DownloadStatus.Paused || state?.status == DownloadStatus.Failed) {
+                DropdownMenuItem(text = { Text("Pick another source") }, onClick = { menu = false; onPick() })
             }
             DropdownMenuItem(text = { Text("Delete download") }, onClick = { menu = false; onDelete() })
         }
