@@ -22,7 +22,6 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -151,9 +150,11 @@ class DownloadsTest {
         assertEquals(DownloadStatus.Done, again.state(70)?.status)
         assertTrue(again.canResume(7, 70))
 
+        val subtitle = File(root, "TVSeries/A show/Season 1 Episode 1 - Pilot English.vtt")
+        assertTrue(subtitle.exists())
         again.delete(7, 70)
-        withTimeout(5_000) { while (file.exists()) kotlinx.coroutines.delay(50) }
-        assertFalse(File(root, "TVSeries/A show/Season 1 Episode 1 - Pilot English.vtt").exists())
+        // The files go in the background, the video first
+        withTimeout(5_000) { while (file.exists() || subtitle.exists()) kotlinx.coroutines.delay(50) }
         assertNull(again.state(70))
         assertTrue(again.titles().isEmpty())
         scope.cancel()
