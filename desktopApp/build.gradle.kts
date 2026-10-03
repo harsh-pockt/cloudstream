@@ -75,11 +75,12 @@ abstract class PrepareLibmpv : DefaultTask() {
 }
 
 val prepareLibmpv by tasks.registering(PrepareLibmpv::class) {
-    // shinchiro keeps builds for a few months only: before this one is removed, update to a newer build or mirror it
-    archiveUrl = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261002/mpv-dev-x86_64-20261002-git-3186d369f9.7z"
+    // shinchiro's 20261002 build, mirrored on the fork because shinchiro keeps only its last 30 builds
+    archiveUrl = "https://github.com/harsh-pockt/cloudstream/releases/download/libmpv-20261002/mpv-dev-x86_64-20261002-git-3186d369f9.7z"
     archiveSha256 = "d873450cc1a7f881a8a10c33936d9555ad18a3809d827b9dbea55ba55caebcf9"
-    // The archive uses the BCJ2 filter, which only 7-Zip itself unpacks. 7zr.exe is its small standalone version
-    sevenZipUrl = "https://www.7-zip.org/a/7zr.exe"
+    // The archive uses the BCJ2 filter, which only 7-Zip itself unpacks. 7zr.exe is its small standalone version,
+    // mirrored too: 7-zip.org replaces it with each new version
+    sevenZipUrl = "https://github.com/harsh-pockt/cloudstream/releases/download/libmpv-20261002/7zr.exe"
     sevenZipSha256 = "ad4c82fadcbdf93c03b4fc440f300509c7d60c5c2f4d183e35d9d70d6957037d"
     downloadDir = layout.buildDirectory.dir("libmpv-download")
     // In the windows folder of the app resources, so it is only bundled on Windows
