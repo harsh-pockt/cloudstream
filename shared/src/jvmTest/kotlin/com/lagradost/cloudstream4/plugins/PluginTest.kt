@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.nio.file.Files
+import kotlin.io.path.readBytes
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.jar.JarEntry
@@ -103,6 +104,15 @@ class PluginTest {
         assertEquals(10L, plugins[0].jarFileSize)
     }
 
+    @Test
+    fun aPluginNameThatIsNotASafeFileNameIsSkipped() {
+        val names = listOf("../../evil", "C:/Users/Public/evil", "..", "a b", "ok.Name_1-2")
+        val plugins = RepositoryClient.parsePluginList(
+            names.joinToString(",", "[", "]") { """{"internalName":"$it","name":"x","version":1,"jarUrl":"https://h/x.jar"}""" }
+        )
+        assertEquals(listOf("ok.Name_1-2"), plugins.map { it.internalName })
+    }
+
     /** Serves repo.json, plugins.json and the jar from a local server, like a GitHub repository */
     private fun serveRepository(jar: ByteArray, jarHash: String = sha256(jar)): String {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).also { this.server = it }
@@ -112,6 +122,7 @@ class PluginTest {
             "/plugins.json" to """[{"internalName":"TestPlugin","name":"Test plugin","version":2,"status":1,
                 "jarUrl":"$base/TestPlugin.jar","jarHash":"$jarHash","jarFileSize":${jar.size}}]""".toByteArray(),
             "/TestPlugin.jar" to jar,
+            "/Broken.cs3" to "not an Android extension".toByteArray(),
         )
         server.createContext("/") { exchange ->
             val body = files[exchange.requestURI.path]
@@ -151,6 +162,27 @@ class PluginTest {
         assertTrue(restarted.installed.value.isEmpty())
         assertFalse(dir.resolve("plugins/TestPlugin.jar").exists())
         assertTrue(APIHolder.apis.none { it.name == "Desktop Test Provider" })
+    }
+
+    @Test
+    fun anUpdateThatFailsToConvertKeepsTheOldVersionRunning() = runBlocking {
+        val repoUrl = serveRepository(pluginJar(*pluginClasses))
+        val client = RepositoryClient()
+        val plugin = client.fetchPlugins(client.fetchRepository(repoUrl)).single()
+        val manager = DesktopPluginManager(dir.resolve("plugins"), client)
+        manager.install(repoUrl, plugin)
+        val jar = dir.resolve("plugins/TestPlugin.jar")
+        val before = jar.readBytes()
+
+        // Version 3 is only an Android build, and not a readable one
+        val broken = plugin.copy(version = 3, jarUrl = null, jarHash = null, jarFileSize = null, androidUrl = repoUrl.replace("repo.json", "Broken.cs3"))
+        assertFailsWith<PluginDownloadException> { manager.install(repoUrl, broken) }
+        assertNotNull(manager.loadedPlugin("TestPlugin"), "the old version is still loaded")
+        assertNotNull(APIHolder.getApiFromNameNull("Desktop Test Provider"))
+        assertEquals(2, manager.installed.value.single().version)
+        assertTrue(before.contentEquals(jar.readBytes()))
+        assertTrue(Files.list(dir.resolve("plugins")).use { files -> files.noneMatch { it.fileName.toString().endsWith(".new") } })
+        manager.uninstall("TestPlugin")
     }
 
     @Test

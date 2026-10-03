@@ -52,8 +52,12 @@ class LoadedPlugin internal constructor(
 object PluginLoader {
     private const val ANNOTATION_DESCRIPTOR = "Lcom/lagradost/cloudstream3/plugins/CloudstreamPlugin;"
 
-    fun load(file: Path, parent: ClassLoader = PluginLoader::class.java.classLoader): LoadedPlugin {
-        val classLoader = AndroidPluginClassLoader(file, parent)
+    /**
+     * [android] is for a plugin converted from Android: what it uses that desktop lacks is stubbed.
+     * A desktop jar is built against the desktop library, so a missing class there is a real error
+     */
+    fun load(file: Path, parent: ClassLoader = PluginLoader::class.java.classLoader, android: Boolean = true): LoadedPlugin {
+        val classLoader = AndroidPluginClassLoader(file, parent, stubMissing = android)
         try {
             val className = findPluginClassName(file)
                 ?: throw IllegalArgumentException("No class annotated with @CloudstreamPlugin in $file")

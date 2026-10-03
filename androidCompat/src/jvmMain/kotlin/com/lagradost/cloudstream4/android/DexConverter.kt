@@ -14,7 +14,6 @@ import com.googlecode.d2j.visitors.DexFileVisitor
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import java.lang.reflect.Modifier
-import java.net.URI
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
@@ -137,7 +136,8 @@ object DexConverter {
         val manifest = ZipFile(cs3.toFile()).use { zip ->
             zip.getEntry(MANIFEST)?.let { entry -> zip.getInputStream(entry).use { it.readBytes() } }
         } ?: return
-        FileSystems.newFileSystem(URI.create("jar:" + jar.toUri()), emptyMap<String, Any>()).use { fs ->
+        // Opened by path: a "jar:" uri breaks on a folder name with "!" in it
+        FileSystems.newFileSystem(jar).use { fs ->
             Files.write(fs.getPath(MANIFEST), manifest)
         }
     }

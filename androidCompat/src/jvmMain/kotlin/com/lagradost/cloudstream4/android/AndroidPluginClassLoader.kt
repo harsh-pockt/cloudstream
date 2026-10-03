@@ -18,6 +18,8 @@ import java.util.jar.JarFile
 class AndroidPluginClassLoader(
     private val jar: Path,
     parent: ClassLoader,
+    /** Stubs and redirects what desktop lacks, for Android plugins. Off for desktop jars, which fail plainly */
+    private val stubMissing: Boolean = true,
 ) : URLClassLoader(arrayOf(jar.toUri().toURL()), parent) {
     /** Read from the jar the first time a class loads */
     private val model by lazy { StubModel.scan(jar) }
@@ -34,16 +36,16 @@ class AndroidPluginClassLoader(
     val stubbedClasses: Set<String> get() = synchronized(stubbed) { stubbed.toSet() }
 
     override fun findClass(name: String): Class<*> {
-        missingMembers.helperClass(name)?.let { return define(name, it) }
+        if (stubMissing) missingMembers.helperClass(name)?.let { return define(name, it) }
 
         val internalName = name.replace('.', '/')
         val entry = synchronized(jarFile) { jarFile.getJarEntry("$internalName.class") }
         if (entry != null) {
             val bytes = synchronized(jarFile) { jarFile.getInputStream(entry).use { it.readBytes() } }
-            return define(name, missingMembers.rewrite(name, bytes))
+            return define(name, if (stubMissing) missingMembers.rewrite(name, bytes) else bytes)
         }
 
-        if (!StubHierarchy.isStubbed(internalName)) throw ClassNotFoundException(name)
+        if (!stubMissing || !StubHierarchy.isStubbed(internalName)) throw ClassNotFoundException(name)
         val bytes = generator.generate(internalName)
         synchronized(stubbed) { stubbed += name }
         return define(name, bytes)

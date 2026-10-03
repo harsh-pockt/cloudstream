@@ -85,8 +85,17 @@ class DesktopPluginManager(
         _loadedNames.value = loaded.keys.toSet()
     }
 
-    private fun jarFile(internalName: String): Path = dir.resolve("$internalName.jar")
-    private fun androidFile(internalName: String): Path = dir.resolve("android").resolve("$internalName.cs3")
+    private fun jarFile(internalName: String): Path = inside(dir, "$internalName.jar")
+    private fun androidFile(internalName: String): Path = inside(dir.resolve("android"), "$internalName.cs3")
+
+    /** A plugin's file, refusing a name that would land outside its folder */
+    private fun inside(folder: Path, name: String): Path {
+        val file = folder.resolve(name).normalize()
+        require(RepositoryClient.isSafeInternalName(name.substringBeforeLast('.')) && file.parent == folder.normalize()) {
+            "\"$name\" is not a safe plugin file name"
+        }
+        return file
+    }
 
     init {
         // Android plugins look themselves up in the Android app's plugin manager
@@ -121,18 +130,29 @@ class DesktopPluginManager(
         lock.withLock {
             withContext(Dispatchers.IO) {
                 dir.createDirectories()
+                val target = jarFile(plugin.internalName)
+                val cs3 = androidFile(plugin.internalName)
+                // The new version is made ready beside the old one, which keeps working if that fails
+                val newJar = target.resolveSibling("${target.fileName}.new")
+                val newCs3 = cs3.resolveSibling("${cs3.fileName}.new")
+                try {
+                    if (android) {
+                        cs3.parent.createDirectories()
+                        newCs3.writeBytes(bytes)
+                        convert(plugin.internalName, newCs3, newJar)
+                    } else {
+                        newJar.writeBytes(bytes)
+                    }
+                } catch (t: Throwable) {
+                    newJar.deleteIfExists()
+                    newCs3.deleteIfExists()
+                    throw t
+                }
+                // Windows cannot replace a jar that is still loaded
                 loaded.remove(plugin.internalName)?.unload()
                 publishLoaded()
-                val target = jarFile(plugin.internalName)
-                if (android) {
-                    val cs3 = androidFile(plugin.internalName)
-                    cs3.parent.createDirectories()
-                    writeAtomically(cs3, bytes)
-                    convert(plugin.internalName, cs3, target)
-                } else {
-                    writeAtomically(target, bytes)
-                    androidFile(plugin.internalName).deleteIfExists()
-                }
+                Files.move(newJar, target, REPLACE_EXISTING, ATOMIC_MOVE)
+                if (android) Files.move(newCs3, cs3, REPLACE_EXISTING, ATOMIC_MOVE) else cs3.deleteIfExists()
 
                 val entry = InstalledPlugin(
                     plugin.internalName, plugin.name, plugin.version, repositoryUrl,
@@ -181,12 +201,6 @@ class DesktopPluginManager(
         }
     }
 
-    private fun writeAtomically(target: Path, bytes: ByteArray) {
-        val tmp = target.resolveSibling("${target.fileName}.tmp")
-        tmp.writeBytes(bytes)
-        Files.move(tmp, target, REPLACE_EXISTING, ATOMIC_MOVE)
-    }
-
     private fun convert(internalName: String, cs3: Path, target: Path) {
         val start = System.nanoTime()
         val result = try {
@@ -216,7 +230,8 @@ class DesktopPluginManager(
         val file = jarFile(internalName)
         return try {
             if (!file.exists()) throw PluginDownloadException("$file is missing, install the plugin again")
-            loaded[internalName] = PluginLoader.load(file)
+            val android = _installed.value.firstOrNull { it.internalName == internalName }?.isAndroid ?: true
+            loaded[internalName] = PluginLoader.load(file, android = android)
             publishLoaded()
             _errors.update { it - internalName }
             println("INFO DesktopPluginManager: Loaded $internalName")
