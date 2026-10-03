@@ -20,6 +20,8 @@ object Subtitles {
     private val dir: File get() = AppDirs.cache.resolve("subtitles").toFile()
 
     suspend fun download(subtitle: SubtitleFile): File = withContext(Dispatchers.IO) {
+        // A subtitle saved beside a download is a file already
+        File(subtitle.url).takeIf { !subtitle.url.contains("://") && it.isFile }?.let { return@withContext it }
         val name = MessageDigest.getInstance("SHA-1").digest(subtitle.url.toByteArray()).joinToString("") { "%02x".format(it) }
         // mpv reads the format from the content, the extension only helps when it is known
         val extension = subtitle.url.substringBefore('?').substringAfterLast('.', "").lowercase()

@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
@@ -19,6 +21,7 @@ import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.SearchQuality
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream4.generated.resources.*
+import com.lagradost.cloudstream4.download.Downloads
 import com.lagradost.cloudstream4.network.DesktopHttp
 import com.lagradost.cloudstream4.rememberAppSettings
 import com.lagradost.cloudstream4.theme.CloudStreamPrimaryColor
@@ -68,6 +71,7 @@ object SettingsGeneralScreen : SearchableSettings {
         val settings = rememberAppSettings()
         val uriHandler = LocalUriHandler.current
         val bananas = settings.general.bananas.get()
+        val downloadPath by settings.general.downloadPath.changes().collectAsState(settings.general.downloadPath.get())
 
         fun link(title: String, url: String, icon: Painter) = Preference.PreferenceItem.TextPreference(
             title = title,
@@ -107,6 +111,12 @@ object SettingsGeneralScreen : SearchableSettings {
                 entries = DesktopHttp.dnsProviders.mapValues { (value, name) -> if (value == 0) stringResource(Res.string.none) else name },
                 title = stringResource(Res.string.dns_pref),
                 subtitle = "%s · " + stringResource(Res.string.dns_pref_summary),
+            ),
+            Preference.PreferenceItem.TextPreference(
+                title = stringResource(Res.string.download_path_pref),
+                subtitle = downloadPath.ifBlank { Downloads.defaultRoot().absolutePath },
+                icon = painterResource(Res.drawable.folder_open_24px),
+                onClick = { chooseFolder(downloadPath.ifBlank { Downloads.defaultRoot().absolutePath })?.let { settings.general.downloadPath.set(it) } },
             ),
             Preference.PreferenceItem.TextPreference(
                 title = stringResource(Res.string.benene),
@@ -432,3 +442,13 @@ private fun dubSubPreference() = Preference.PreferenceItem.MultiSelectListPrefer
         DubStatus.Subbed.name to stringResource(Res.string.app_subbed_text),
     )
 )
+
+/** The system's folder picker, starting in [current]. Null when cancelled */
+private fun chooseFolder(current: String): String? {
+    val chooser = javax.swing.JFileChooser(java.io.File(current).takeIf { it.isDirectory } ?: java.io.File(System.getProperty("user.home"))).apply {
+        dialogTitle = "Download path"
+        fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
+        isAcceptAllFileFilterUsed = false
+    }
+    return if (chooser.showDialog(null, "Use this folder") == javax.swing.JFileChooser.APPROVE_OPTION) chooser.selectedFile?.absolutePath else null
+}
