@@ -50,6 +50,11 @@ data class InstalledPlugin(
     val iconUrl: String? = null,
     /** The file it was downloaded from. Android extensions check it, see PluginData.url */
     val fileUrl: String? = null,
+    /**
+     * Methods of an Android plugin that could not be converted, or were too big to: they throw when
+     * called, so some of the plugin's sources may not work on desktop
+     */
+    val disabledMethods: Int = 0,
 )
 
 /** A newer version of an installed plugin in its repository */
@@ -138,11 +143,12 @@ class DesktopPluginManager(
                 // The new version is made ready beside the old one, which keeps working if that fails
                 val newJar = target.resolveSibling("${target.fileName}.new")
                 val newCs3 = cs3.resolveSibling("${cs3.fileName}.new")
+                var disabled = 0
                 try {
                     if (android) {
                         cs3.parent.createDirectories()
                         newCs3.writeBytes(bytes)
-                        convert(plugin.internalName, newCs3, newJar)
+                        disabled = convert(plugin.internalName, newCs3, newJar)
                     } else {
                         newJar.writeBytes(bytes)
                     }
@@ -161,6 +167,7 @@ class DesktopPluginManager(
                     plugin.internalName, plugin.name, plugin.version, repositoryUrl,
                     isAndroid = android, convertedWith = if (android) CONVERTER_VERSION else 0,
                     iconUrl = plugin.iconUrl, fileUrl = if (android) plugin.androidUrl else plugin.jarUrl,
+                    disabledMethods = disabled,
                 )
                 writeIndex(_installed.value.filterNot { it.internalName == plugin.internalName } + entry)
                 loadLocked(plugin.internalName)?.let { throw it }
@@ -204,7 +211,8 @@ class DesktopPluginManager(
         }
     }
 
-    private fun convert(internalName: String, cs3: Path, target: Path) {
+    /** Returns how many methods could not be converted */
+    private fun convert(internalName: String, cs3: Path, target: Path): Int {
         val start = System.nanoTime()
         val result = try {
             DexConverter.convert(cs3, target)
@@ -215,6 +223,7 @@ class DesktopPluginManager(
         }
         val millis = (System.nanoTime() - start) / 1_000_000
         println("INFO DesktopPluginManager: Converted $internalName in $millis ms, ${result.failedMethods} methods failed")
+        return result.failedMethods
     }
 
     /** Converts a plugin again after the converter changed. Without its .cs3 the old jar is kept */
@@ -222,8 +231,12 @@ class DesktopPluginManager(
         val cs3 = androidFile(plugin.internalName)
         if (!cs3.exists()) return
         runCatching { convert(plugin.internalName, cs3, jarFile(plugin.internalName)) }
-            .onSuccess {
-                writeIndex(_installed.value.map { if (it.internalName == plugin.internalName) it.copy(convertedWith = CONVERTER_VERSION) else it })
+            .onSuccess { disabled ->
+                writeIndex(
+                    _installed.value.map {
+                        if (it.internalName == plugin.internalName) it.copy(convertedWith = CONVERTER_VERSION, disabledMethods = disabled) else it
+                    },
+                )
             }
             .onFailure { println("ERROR DesktopPluginManager: Could not convert ${plugin.internalName} again: $it") }
     }
@@ -260,6 +273,7 @@ class DesktopPluginManager(
                 convertedWith = obj["convertedWith"]?.jsonPrimitive?.int ?: 0,
                 iconUrl = obj["iconUrl"]?.jsonPrimitive?.takeIf { it.isString }?.content,
                 fileUrl = obj["fileUrl"]?.jsonPrimitive?.takeIf { it.isString }?.content,
+                disabledMethods = obj["disabledMethods"]?.jsonPrimitive?.int ?: 0,
             )
         }
     }.getOrElse {
@@ -280,6 +294,7 @@ class DesktopPluginManager(
                     "convertedWith" to JsonPrimitive(it.convertedWith),
                     "iconUrl" to JsonPrimitive(it.iconUrl),
                     "fileUrl" to JsonPrimitive(it.fileUrl),
+                    "disabledMethods" to JsonPrimitive(it.disabledMethods),
                 )
             )
         })
@@ -290,8 +305,11 @@ class DesktopPluginManager(
     }
 
     companion object {
-        /** Raise when the conversion changes, so Android plugins installed before are converted again */
-        const val CONVERTER_VERSION = 1
+        /**
+         * Raise when the conversion changes, so Android plugins installed before are converted again.
+         * 2: the methods that could not be converted are counted (disabledMethods)
+         */
+        const val CONVERTER_VERSION = 2
 
         /** The app's plugin manager, keeping plugins in the plugins folder next to the settings */
         val instance: DesktopPluginManager by lazy {

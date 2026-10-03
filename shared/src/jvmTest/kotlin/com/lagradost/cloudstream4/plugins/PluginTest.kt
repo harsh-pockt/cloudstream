@@ -139,6 +139,19 @@ class PluginTest {
         "sha256-" + MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     @Test
+    fun partsThatCouldNotBeConvertedAreKeptAcrossRestarts() {
+        val plugins = dir.resolve("plugins").also { Files.createDirectories(it) }
+        plugins.resolve("installed.json").writeBytes(
+            """[{"internalName":"Big","name":"Big","version":1,"repositoryUrl":"https://h/repo.json","isAndroid":true,
+                "convertedWith":${DesktopPluginManager.CONVERTER_VERSION},"disabledMethods":2},
+               {"internalName":"Old","name":"Old","version":1,"repositoryUrl":"https://h/repo.json"}]""".toByteArray(),
+        )
+        val manager = DesktopPluginManager(plugins, RepositoryClient())
+        // Saved by an older app, without the field: nothing disabled
+        assertEquals(mapOf("Big" to 2, "Old" to 0), manager.installed.value.associate { it.internalName to it.disabledMethods })
+    }
+
+    @Test
     fun installFromRepositoryThenRestartThenUninstall() = runBlocking {
         val repoUrl = serveRepository(pluginJar(*pluginClasses))
         val client = RepositoryClient()
