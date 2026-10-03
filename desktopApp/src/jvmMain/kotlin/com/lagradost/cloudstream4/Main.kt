@@ -35,6 +35,7 @@ import com.lagradost.cloudstream4.generated.resources.Res
 import com.lagradost.cloudstream4.generated.resources.app_name
 import com.lagradost.cloudstream4.generated.resources.default_icon
 import com.lagradost.cloudstream4.android.DesktopAndroid
+import com.lagradost.cloudstream4.browser.SystemBrowser
 import com.lagradost.cloudstream4.network.DesktopHttp
 import com.lagradost.cloudstream4.plugins.DesktopPluginManager
 import com.lagradost.cloudstream4.settings.AppUpdatePrompt
@@ -62,6 +63,9 @@ fun main() {
     // Before the extensions load: they make their requests through it
     @OptIn(DelicateCoroutinesApi::class)
     DesktopHttp.start(GlobalScope)
+    // Edge or Chrome stands in for Android's WebView, for extensions behind Cloudflare and the like
+    // The app is in front when an extension needs the browser, and lets it come forward
+    SystemBrowser.install()?.onShow = WindowsForeground::allow
     // Plugins load in the background so a slow or broken plugin never delays the window
     @OptIn(DelicateCoroutinesApi::class)
     GlobalScope.launch(Dispatchers.IO) {

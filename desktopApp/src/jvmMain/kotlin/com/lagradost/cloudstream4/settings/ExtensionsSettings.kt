@@ -523,7 +523,7 @@ class RepositoryScreen(private val url: String) : SearchableSettings {
                             Preference.PreferenceItem.InfoPreference(
                                 "These extensions were built for Android. Desktop converts them when you install " +
                                         "them, which takes a few seconds. Searching and playing work for most; their " +
-                                        "settings screens and anything that needs Android's WebView do not."
+                                        "settings screens do not. Sites behind Cloudflare open in Microsoft Edge in the background."
                             )
                         ) + android.map { row(it) },
                     ),

@@ -81,4 +81,8 @@ tasks.withType<Test>().configureEach {
     maxHeapSize = "3g"
     // Tests keep their files, such as the HTTP cache, away from the real app's folders
     systemProperty("cloudstream.home", layout.buildDirectory.dir("test-home").get().asFile.absolutePath)
+    // Tests that start the installed Edge or Chrome, off by default: gradlew :shared:jvmTest -PbrowserTests
+    systemProperty("cloudstream.browserTests", providers.gradleProperty("browserTests").isPresent.toString())
+    systemProperty("cloudstream.cloudflareTest", providers.gradleProperty("cloudflareTest").isPresent.toString())
+    systemProperty("cloudstream.cloudflareUrl", providers.gradleProperty("cloudflareUrl").getOrElse(""))
 }
