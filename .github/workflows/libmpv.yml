@@ -89,11 +89,11 @@ jobs:
         run: |
           for dir in src_packages/*/; do
             lib=$(basename "$dir")
+            # Configuring makes an empty folder for every library, built here or not
+            [[ -z "$(ls -A "$dir")" ]] && continue
             if git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 && [[ "$(git -C "$dir" rev-parse --show-toplevel)" == "$(cd "$dir" && pwd)" ]]; then
               base=$(git -C "$dir" merge-base HEAD '@{u}' 2> /dev/null || git -C "$dir" rev-parse HEAD)
-              patches=$(git -C "$dir" rev-list --count "$base..HEAD")
-              printf '%-24s %s %s%s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$base" \
-                "$([[ $patches -gt 0 ]] && echo " + $patches patches from toolchain/")"
+              printf '%-24s %s %s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$base"
             else
               printf '%-24s from an archive, in the source as it was unpacked\n' "$lib"
             fi
@@ -168,19 +168,35 @@ jobs:
           restore-keys: ${{ env.TOOLCHAIN_CACHE }}-
           fail-on-cache-miss: true
 
-      # As shinchiro's mpv_clang.yml
+      # The compiler's cache from the last run: a library that has not changed since is not compiled
+      # again. Most help when a run is repeated after a failure
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: winbuild/build/x86_64-w64-mingw32/ccache
+          key: libmpv-ccache-${{ github.run_id }}
+          restore-keys: libmpv-ccache-
+
+      # As shinchiro's mpv_clang.yml, with room in the compiler cache for every library
       - name: Configure and download the sources
         working-directory: winbuild
         run: |
           cmake -DTARGET_ARCH=x86_64-w64-mingw32 -DCOMPILER_TOOLCHAIN=clang -DCMAKE_INSTALL_PREFIX=$PWD/clang_root \
             -DMINGW_INSTALL_PREFIX=$PWD/build/x86_64-w64-mingw32 -DSINGLE_SOURCE_LOCATION=$PWD/src_packages \
-            -DRUSTUP_LOCATION=$PWD/clang_root/install_rustup -DENABLE_CCACHE=ON -DCLANG_PACKAGES_LTO=ON \
+            -DRUSTUP_LOCATION=$PWD/clang_root/install_rustup -DENABLE_CCACHE=ON -DCCACHE_MAXSIZE=2G -DCLANG_PACKAGES_LTO=ON \
             -G Ninja --fresh -B build -S .
           ninja -C build download || true
 
       - name: Build mpv
         working-directory: winbuild
         run: ninja -C build mpv
+
+      - name: Save the compiler cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v6
+        with:
+          path: winbuild/build/x86_64-w64-mingw32/ccache
+          key: libmpv-ccache-${{ github.run_id }}
 
       - name: Package libmpv
         id: package
@@ -194,14 +210,16 @@ jobs:
           (cd ../out && sha256sum "$name.7z" > "$name.7z.sha256")
 
       # After the build, each source folder holds the commit it was built from: the scripts update a
-      # library just before building it, and not after. Where they patch a library with git am, the
-      # patches sit on top as commits of their own: the list names the library's commit under them.
-      # The toolchain may come from an earlier run, so its commits are those that run wrote down
+      # library just before building it, and once built, reset it to that commit without their
+      # patches, which are in packages/. Configuring makes an empty folder for every library, which
+      # is skipped. The toolchain may come from an earlier run, so its commits are those that run
+      # wrote down; the libraries it built are those with a commit there
       - name: Write down every version
         working-directory: winbuild
         run: |
           name=${{ steps.package.outputs.name }}
-          toolchain=" $(cut -d' ' -f1 clang_root/toolchain-sources.txt | tr '\n' ' ') "
+          awk '$2 ~ /^https?:/' clang_root/toolchain-sources.txt > ../toolchain-sources.txt
+          toolchain=" $(cut -d' ' -f1 ../toolchain-sources.txt | tr '\n' ' ') "
           {
             echo "# Sources of $name.7z"
             echo "# Built $(date -u +%Y-%m-%dT%H:%MZ) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -209,17 +227,15 @@ jobs:
             echo "# Container: $(grep ^PRETTY_NAME /etc/os-release | cut -d= -f2) (ghcr.io/shinchiro/archlinux)"
             echo
             echo "# Toolchain, its source is in clang_root/toolchain-source.7z"
-            cat clang_root/toolchain-sources.txt
+            cat ../toolchain-sources.txt
             echo
             echo "# Libraries"
             for dir in src_packages/*/; do
               lib=$(basename "$dir")
-              [[ "$toolchain" == *" $lib "* ]] && continue
+              [[ "$toolchain" == *" $lib "* || -z "$(ls -A "$dir")" ]] && continue
               if git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 && [[ "$(git -C "$dir" rev-parse --show-toplevel)" == "$(cd "$dir" && pwd)" ]]; then
                 base=$(git -C "$dir" merge-base HEAD '@{u}' 2> /dev/null || git -C "$dir" rev-parse HEAD)
-                patches=$(git -C "$dir" rev-list --count "$base..HEAD")
-                printf '%-24s %s %s%s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$base" \
-                  "$([[ $patches -gt 0 ]] && echo " + $patches patches from packages/")"
+                printf '%-24s %s %s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$base"
               else
                 printf '%-24s from an archive, in the source as it was unpacked\n' "$lib"
               fi
@@ -239,11 +255,15 @@ jobs:
           rm -rf build/packages
           df -h .
           exclude=()
-          for lib in $(cut -d' ' -f1 clang_root/toolchain-sources.txt); do exclude+=("-x!src_packages/$lib"); done
+          for lib in $(cut -d' ' -f1 ../toolchain-sources.txt); do exclude+=("-x!src_packages/$lib"); done
+          # The Rust crates are in the registry, and in git checkouts only when one comes from git
+          paths=()
+          for path in clang_root/install_rustup/.cargo/registry/src clang_root/install_rustup/.cargo/git/checkouts; do
+            [[ -d $path ]] && paths+=("$path")
+          done
           7z a -t7z -mx=7 -mmt=on -v1900m -xr'!.git' "${exclude[@]}" ../out/$name-source.7z \
             src_packages CMakeLists.txt README.md cargo_config.in ccache_conf.in exec.in meson_cross.txt.in toolchain.cmake.in \
-            cmake packages scripts toolchain clang_root/toolchain-source.7z \
-            clang_root/install_rustup/.cargo/registry/src clang_root/install_rustup/.cargo/git/checkouts \
+            cmake packages scripts toolchain clang_root/toolchain-source.7z "${paths[@]}" \
             ../out/$name-sources.txt
           ls -la ../out
           (cd ../out && sha256sum $name-source.7z.* > $name-source.7z.sha256)
