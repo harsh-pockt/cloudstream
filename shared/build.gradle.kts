@@ -81,4 +81,6 @@ tasks.withType<Test>().configureEach {
     maxHeapSize = "3g"
     // Tests keep their files, such as the HTTP cache, away from the real app's folders
     systemProperty("cloudstream.home", layout.buildDirectory.dir("test-home").get().asFile.absolutePath)
+    // Downloads TorrServer and streams a public torrent, off by default: gradlew :shared:jvmTest -PtorrentTests
+    systemProperty("cloudstream.torrentTests", providers.gradleProperty("torrentTests").isPresent.toString())
 }

@@ -64,6 +64,7 @@ import com.lagradost.cloudstream4.search.DataStoreSearchHistory
 import com.lagradost.cloudstream4.search.SearchViewModel
 import com.lagradost.cloudstream4.settings.ExtensionsScreen
 import com.lagradost.cloudstream4.settings.SettingsHomeScreen
+import com.lagradost.cloudstream4.torrent.TorrServer
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.combine
@@ -325,14 +326,14 @@ private fun PageContent(page: Page, navigator: AppNavigator) {
     }
     when (page) {
         is Page.Details -> DetailScreen(
-            viewModel = viewModel { DetailViewModel(api, page.url, DataStoreWatchStore.instance) },
+            viewModel = viewModel { DetailViewModel(api, page.url, DataStoreWatchStore.instance, torrents = TorrServer.supported) },
             onBack = { navigator.back() },
             onPlay = navigator::play,
             onOpen = navigator::openDetails,
         )
 
         is Page.Player -> PlayerScreen(
-            viewModel = viewModel { LinksViewModel(api, page.request) },
+            viewModel = viewModel { LinksViewModel(api, page.request, torrents = TorrServer.supported) },
             fullscreen = navigator.fullscreen,
             onBack = { navigator.back() },
             onToggleFullscreen = navigator::toggleFullscreen,

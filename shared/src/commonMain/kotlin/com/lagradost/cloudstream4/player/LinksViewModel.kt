@@ -29,7 +29,7 @@ data class LinksState(
     val selected: String? = null,
     /** Links that failed to play, by url, with the reason */
     val failed: Map<String, String> = emptyMap(),
-    /** Links found that the desktop player cannot use, such as torrents or DRM */
+    /** Links found that the player cannot use, such as DRM, or torrents where they cannot play */
     val skipped: Int = 0,
 ) {
     val selectedLink: ExtractorLink? get() = links.firstOrNull { it.url == selected }
@@ -54,6 +54,8 @@ class LinksViewModel(
     private val api: MainAPI,
     val request: PlayRequest,
     private val autoPickAfter: Duration = 6.seconds,
+    /** Torrents and magnet links can play, after every other link */
+    private val torrents: Boolean = false,
 ) : ViewModel(), StateContainer<LinksState> by DefaultStateContainer(LinksState()), ActionHandler<LinksAction> {
 
     private var loadJob: Job? = null
@@ -89,6 +91,8 @@ class LinksViewModel(
                 delay(autoPickAfter)
                 pickIfNone()
             }
+            // A torrent title's data is its magnet or .torrent link, which the extension may not repeat
+            if (torrents) torrentLink(request.data)?.let(::addLink)
             api.loadLinksSafely(
                 request.data,
                 onSubtitle = { sub -> updateState { if (subtitles.any { it.url == sub.url }) this else copy(subtitles = subtitles + sub) } },
@@ -102,13 +106,14 @@ class LinksViewModel(
     }
 
     private fun addLink(link: ExtractorLink) {
-        val playable = link !is DrmExtractorLink && link.type != ExtractorLinkType.TORRENT && link.type != ExtractorLinkType.MAGNET
+        val playable = link !is DrmExtractorLink && (torrents || !isTorrent(link))
         updateState {
             when {
                 !playable -> copy(skipped = skipped + 1)
                 links.any { it.url == link.url } -> this
                 else -> {
-                    val links = (links + link).sortedByDescending { rank(it.quality) }
+                    // Torrents last: they take a while to start and share the user's connection
+                    val links = (links + link).sortedWith(compareBy<ExtractorLink> { isTorrent(it) }.thenByDescending { rank(it.quality) })
                     copy(links = links, selected = selected ?: if (autoPicking) nextLink(links, failed) else null)
                 }
             }
@@ -123,6 +128,19 @@ class LinksViewModel(
     companion object {
         private fun nextLink(links: List<ExtractorLink>, failed: Map<String, String>) =
             links.firstOrNull { it.url !in failed }?.url
+
+        fun isTorrent(link: ExtractorLink) = link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET
+
+        /** The link a torrent title's data is, as the Android app plays it */
+        private fun torrentLink(data: String): ExtractorLink? {
+            val type = when {
+                data.startsWith("magnet:") -> ExtractorLinkType.MAGNET
+                data.substringBefore('?').endsWith(".torrent") -> ExtractorLinkType.TORRENT
+                else -> return null
+            }
+            @Suppress("DEPRECATION")
+            return ExtractorLink("Torrent", "Torrent", data, "", Qualities.Unknown.value, type = type)
+        }
 
         /** Higher is better. An unknown quality ranks with 480p, as on Android */
         fun rank(quality: Int): Int = if (quality == Qualities.Unknown.value) Qualities.P480.value else quality
