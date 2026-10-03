@@ -63,9 +63,8 @@ fun main() {
     // Before the extensions load: they make their requests through it
     @OptIn(DelicateCoroutinesApi::class)
     DesktopHttp.start(GlobalScope)
-    // Edge or Chrome stands in for Android's WebView, for extensions behind Cloudflare and the like
-    // The app is in front when an extension needs the browser, and lets it come forward
-    SystemBrowser.install()?.onShow = WindowsForeground::allow
+    // Edge or Chrome, without a window, stands in for Android's WebView, for extensions behind Cloudflare and the like
+    SystemBrowser.install()
     // Plugins load in the background so a slow or broken plugin never delays the window
     @OptIn(DelicateCoroutinesApi::class)
     GlobalScope.launch(Dispatchers.IO) {

@@ -11,6 +11,7 @@ import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -64,6 +65,9 @@ class SystemBrowserTest {
         assertEquals(listOf("$base/player"), extra.map { it.url.toString() })
         assertTrue(browser.cookies("$base/player").orEmpty().contains("seen=yes"))
         assertTrue(WebViewResolver.webViewUserAgent.orEmpty().contains("Mozilla"))
+        // Sites refuse a headless browser, which says so in its user agent
+        assertFalse(WebViewResolver.webViewUserAgent.orEmpty().contains("Headless"))
+        assertFalse(found.header("User-Agent").orEmpty().contains("Headless"))
     }
 
     /** A test page behind Cloudflare's check (it answers 403 to plain clients), so only with -PcloudflareTest as well */

@@ -18,7 +18,6 @@ private interface User32 : StdCallLibrary {
     fun ShowWindow(hwnd: Pointer, cmd: Int): Boolean
     fun IsZoomed(hwnd: Pointer): Boolean
     fun SetForegroundWindow(hwnd: Pointer): Boolean
-    fun AllowSetForegroundWindow(processId: Int): Boolean
 }
 
 private val user32: User32? by lazy {
@@ -130,12 +129,5 @@ object WindowsHide {
         val hwnd = Native.getWindowPointer(window) ?: return
         user32.ShowWindow(hwnd, SW_SHOW)
         user32.SetForegroundWindow(hwnd)
-    }
-}
-
-/** Lets another program's window come in front of the app's, which Windows otherwise refuses it */
-object WindowsForeground {
-    fun allow(processId: Long) {
-        user32?.AllowSetForegroundWindow(processId.toInt())
     }
 }
