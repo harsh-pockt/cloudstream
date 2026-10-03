@@ -38,7 +38,8 @@ object DesktopAndroid {
         preferences.computeIfAbsent(name) { DesktopSharedPreferences(prefsDir.resolve("${safeFileName(it)}.json")) }
 
     val application: Application by lazy { Application() }
-    val activity: Activity by lazy { Activity() }
+    /** An AppCompatActivity, which extensions often cast it to */
+    val activity: Activity by lazy { androidx.appcompat.app.AppCompatActivity() }
 
     /** Shows an extension's toast in the app. Without one, toasts are only logged */
     @Volatile
