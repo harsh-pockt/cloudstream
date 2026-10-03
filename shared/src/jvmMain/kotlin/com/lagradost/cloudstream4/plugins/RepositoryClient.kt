@@ -189,11 +189,22 @@ class RepositoryClient(
         private val DEEP_LINK_REGEX = """^(cloudstreamrepo://|https://cs\.repo/\??)""".toRegex()
         private val SHORT_CODE_REGEX = "^[a-zA-Z0-9!_-]+$".toRegex()
 
+        private val INTERNAL_NAME_REGEX = "^[A-Za-z0-9._-]{1,100}$".toRegex()
+
+        /** Letters, digits, dots, dashes and underscores, and not "." or ".." */
+        fun isSafeInternalName(name: String) = INTERNAL_NAME_REGEX.matches(name) && name.trim('.').isNotEmpty()
+
         internal fun parsePluginList(text: String): List<RepoPlugin> =
             Json.parseToJsonElement(text).jsonArray.mapNotNull { element ->
                 val obj = element as? JsonObject ?: return@mapNotNull null
+                val internalName = obj.string("internalName") ?: return@mapNotNull null
+                // It names the plugin's files: a repository must not be able to point them elsewhere
+                if (!isSafeInternalName(internalName)) {
+                    println("WARNING RepositoryClient: Skipped a plugin named \"$internalName\", not a safe file name")
+                    return@mapNotNull null
+                }
                 RepoPlugin(
-                    internalName = obj.string("internalName") ?: return@mapNotNull null,
+                    internalName = internalName,
                     name = obj.string("name") ?: obj.string("internalName")!!,
                     version = obj.primitive("version")?.intOrNull ?: 0,
                     status = obj.primitive("status")?.intOrNull ?: 1,
