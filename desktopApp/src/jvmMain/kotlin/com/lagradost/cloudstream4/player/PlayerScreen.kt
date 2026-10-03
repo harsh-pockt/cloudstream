@@ -118,6 +118,7 @@ fun PlayerScreen(
     onToggleFullscreen: () -> Unit,
     /** Hands the player's key handler to the window, null when the player closes */
     onKeys: (((KeyEvent) -> Boolean)?) -> Unit = {},
+    subtitleSettings: SubtitleSettingsStore = DataStoreSubtitleSettings.instance,
 ) {
     val lib = Mpv.library
     if (lib == null) {
@@ -266,6 +267,29 @@ fun PlayerScreen(
         }
     }
 
+    // The subtitle settings apply at once, also while a subtitle shows
+    val subtitleStyle by subtitleSettings.style.collectAsState()
+    LaunchedEffect(player, subtitleStyle) { player.setSubtitleStyle(subtitleStyle.mpvOptions()) }
+    val autoSelect by subtitleSettings.autoSelect.collectAsState()
+    LaunchedEffect(player, autoSelect) { player.setSubtitleLanguages(autoSelect?.let(SubtitleLanguages::codesOf).orEmpty()) }
+
+    // Auto-select, as on Android: once the video plays, if it shows no subtitle in the chosen language,
+    // the first from the extension in that language shows. Only until one is picked or turned off by hand
+    var autoSelected by remember { mutableStateOf(false) }
+    val started = status.duration > 0
+    LaunchedEffect(autoSelect, state.subtitles, started) {
+        val tag = autoSelect ?: return@LaunchedEffect
+        if (autoSelected || !started || subtitleChoice != SubtitleChoice.Default) return@LaunchedEffect
+        if (status.tracks.any { it.type == "sub" && it.selected && SubtitleLanguages.tagOf(it.lang) == tag }) {
+            autoSelected = true
+            return@LaunchedEffect
+        }
+        val subtitle = state.subtitles.sortedBy { it.lang.lowercase() }.firstOrNull { SubtitleLanguages.tagOf(it.lang) == tag }
+            ?: return@LaunchedEffect
+        autoSelected = true
+        showSubtitle(subtitle)
+    }
+
     // Keys reach the player through the window, before anything focused: the buttons that could hold
     // the focus hide in full screen, which used to leave the keys going nowhere
     fun onKey(event: KeyEvent): Boolean {
@@ -334,6 +358,8 @@ fun PlayerScreen(
                     player.selectSubtitle(id)
                 },
                 onSubDelay = { if (it == 0.0) player.resetSubDelay() else player.changeSubDelay(it) },
+                textSize = subtitleStyle.textSize,
+                onTextSize = { size -> subtitleSettings.setStyle(subtitleSettings.style.value.copy(fixedTextSize = size)) },
                 onAudioTrack = player::selectAudio,
                 onSpeed = player::setSpeed,
             )
@@ -354,11 +380,14 @@ fun PlayerScreen(
 
 /** "English", or "English 1", "English 2" when there are several, by url */
 private fun subtitleLabels(subtitles: List<SubtitleFile>): Map<String, String> {
-    val counts = subtitles.groupingBy { it.lang }.eachCount()
+    // Extensions spell a language with stray spaces at times, which must not make it a second language
+    fun name(sub: SubtitleFile) = sub.lang.trim().replace(Regex("\\s+"), " ")
+    val counts = subtitles.groupingBy(::name).eachCount()
     val seen = HashMap<String, Int>()
     return subtitles.associate { sub ->
-        val n = seen.merge(sub.lang, 1, Int::plus)!!
-        sub.url to if (counts.getValue(sub.lang) > 1) "${sub.lang} $n" else sub.lang
+        val lang = name(sub)
+        val n = seen.merge(lang, 1, Int::plus)!!
+        sub.url to if (counts.getValue(lang) > 1) "$lang $n" else lang
     }
 }
 
@@ -701,6 +730,9 @@ private fun SidePanel(
     onSubtitle: (SubtitleFile) -> Unit,
     onSubtitleTrack: (Int?) -> Unit,
     onSubDelay: (Double) -> Unit,
+    textSize: Float,
+    /** null for the normal size */
+    onTextSize: (Float?) -> Unit,
     onAudioTrack: (Int) -> Unit,
     onSpeed: (Double) -> Unit,
 ) {
@@ -723,9 +755,10 @@ private fun SidePanel(
                 val shown = tracks.firstOrNull { it.selected }
                 // Timing first: a video can hold dozens of subtitle tracks
                 if (shown != null) item { SubtitleTiming(status.subDelay, onSubDelay) }
+                if (shown != null) item { SubtitleSize(textSize, onTextSize) }
                 item { Choice("Off", selected = shown == null) { onSubtitleTrack(null) } }
                 // Sorted by language. Extensions often give several of one: they are numbered and show where they come from
-                val subtitles = state.subtitles.sortedBy { it.lang.lowercase() }
+                val subtitles = state.subtitles.sortedBy { it.lang.trim().lowercase() }
                 val labels = subtitleLabels(subtitles)
                 items(subtitles, key = { it.url }) { sub ->
                     val track = downloaded[sub.url]?.let { file -> tracks.firstOrNull { it.isFile(file) } }
@@ -789,6 +822,25 @@ private fun SubtitleTiming(delay: Double, onChange: (Double) -> Unit) {
             TextButton(onClick = { onChange(-0.5) }) { Text("Earlier", color = accent) }
             TextButton(onClick = { onChange(0.5) }) { Text("Later", color = accent) }
             if (abs(delay) >= 0.05) TextButton(onClick = { onChange(0.0) }) { Text("Reset", color = accent) }
+        }
+    }
+}
+
+/** The text size, kept for every video. The rest of the look is in Settings > Player */
+@Composable
+private fun SubtitleSize(size: Float, onChange: (Float?) -> Unit) {
+    val accent = accent()
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text("Size", style = MaterialTheme.typography.titleSmall, color = PlayerColors.content)
+        Text(
+            if (size == SubtitleStyle.DEFAULT_TEXT_SIZE) "Normal · more in Settings > Player" else "${size.toInt()} · more in Settings > Player",
+            style = MaterialTheme.typography.bodySmall,
+            color = PlayerColors.secondary,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { onChange((size - 3).coerceAtLeast(10f)) }, enabled = size > 10f) { Text("Smaller", color = accent) }
+            TextButton(onClick = { onChange((size + 3).coerceAtMost(60f)) }, enabled = size < 60f) { Text("Larger", color = accent) }
+            if (size != SubtitleStyle.DEFAULT_TEXT_SIZE) TextButton(onClick = { onChange(null) }) { Text("Reset", color = accent) }
         }
     }
 }
