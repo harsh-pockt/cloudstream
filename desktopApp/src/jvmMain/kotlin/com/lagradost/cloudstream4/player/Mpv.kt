@@ -84,14 +84,27 @@ data class MpvTrack(
     val language: String? get() = lang?.let(::languageName)
 
     /** For example "Hindi", "Commentary · English" or "Track 2" */
-    val label: String get() = listOfNotNull(title, language).distinctBy { it.lowercase() }.joinToString(" · ").ifEmpty { "Track $id" }
+    val label: String get() = listOfNotNull(title, language).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+        .joinToString(" · ").ifEmpty { "Track $id" }
 
     /** For example "5.1 · EAC3", what tells two tracks in one language apart */
     val details: String get() = listOfNotNull(
         channels?.let { when (it) { 1 -> "Mono"; 2 -> "Stereo"; 6 -> "5.1"; 8 -> "7.1"; else -> "$it channels" } },
-        codec?.uppercase(),
+        codec?.let { codecNames[it] ?: it.uppercase() },
         "Default".takeIf { default },
+        "Picture, keeps its own look".takeIf { isPicture },
     ).joinToString(" · ")
+
+    /** A subtitle drawn as pictures, as on Blu-rays and DVDs: the subtitle settings cannot change how it looks */
+    val isPicture: Boolean get() = type == "sub" && codec in pictureSubtitles
+
+    private companion object {
+        val pictureSubtitles = setOf("hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub")
+        val codecNames = mapOf(
+            "hdmv_pgs_subtitle" to "PGS", "dvd_subtitle" to "VobSub", "dvb_subtitle" to "DVB",
+            "subrip" to "SRT", "webvtt" to "WebVTT", "mov_text" to "Text",
+        )
+    }
 }
 
 /** "Hindi" for "hin" or "hi", the code itself when it is not a language */
@@ -360,6 +373,14 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
     fun toggleMute() = whenStarted { command("cycle", "mute") }
 
     fun setSpeed(speed: Double) = whenStarted { command("set", "speed", speed.toString()) }
+
+    /** How subtitles look, from SubtitleStyle.mpvOptions. The one shown changes at once */
+    fun setSubtitleStyle(options: List<Pair<String, String>>) = whenStarted {
+        options.forEach { (name, value) -> command("set", name, value) }
+    }
+
+    /** The languages, as codes, whose subtitle track in the video mpv shows on its own, for the next file */
+    fun setSubtitleLanguages(codes: List<String>) = whenStarted { command("set", "slang", codes.joinToString(",")) }
 
     fun changeSubDelay(seconds: Double) = whenStarted { command("add", "sub-delay", seconds.toString()) }
 

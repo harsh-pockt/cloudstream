@@ -31,8 +31,8 @@ import org.jetbrains.compose.resources.stringResource
 /*
  * Desktop versions of the settings screens in app/ui/settings. They use the same AppSettings keys,
  * but leave out what only applies to Android: TV layout, touch gestures, battery, rotation, PiP,
- * APK updates and biometrics. Accounts, updates, backups, downloads and subtitles come with the
- * phases that add those features.
+ * APK updates and biometrics. Accounts, updates, backups and downloads come with the phases that
+ * add those features.
  */
 
 /** The settings home: one entry per category */
@@ -171,6 +171,7 @@ object SettingsPlayerScreen : SearchableSettings {
                     ),
                 )
             ),
+            subtitlePreferences(),
         )
     }
 }
