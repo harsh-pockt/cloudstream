@@ -1,5 +1,6 @@
 package com.lagradost.cloudstream4
 
+import java.io.BufferedOutputStream
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.io.PrintStream
@@ -23,7 +24,9 @@ object DesktopLog {
             val file = dir.resolve("cloudstream.log")
             if (file.exists()) Files.move(file, dir.resolve("cloudstream.old.log"), REPLACE_EXISTING)
 
-            val log = TimestampedOutputStream(FileOutputStream(file.toFile()))
+            // Buffered: the timestamps are added a byte at a time, which would otherwise mean a write to
+            // disk per byte. Both streams flush at the end of every line, so the log stays current
+            val log = TimestampedOutputStream(BufferedOutputStream(FileOutputStream(file.toFile())))
             System.setOut(PrintStream(TeeOutputStream(System.out, log), true, Charsets.UTF_8))
             System.setErr(PrintStream(TeeOutputStream(System.err, log), true, Charsets.UTF_8))
         } catch (t: Throwable) {

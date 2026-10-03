@@ -102,6 +102,17 @@ compose.desktop {
         mainClass = "com.lagradost.cloudstream4.MainKt"
         // Read by AppVersion, for the update check
         jvmArgs("-Dcloudstream.version=${libs.versions.versionName.get()}")
+        // Memory. Without a limit the heap may grow to a quarter of the computer's RAM before it is
+        // collected, while the app uses well under 100 MB of it. When idle, the heap shrinks and the
+        // memory goes back to Windows. Strings repeated across extensions' results are kept once
+        jvmArgs(
+            "-Xmx1g",
+            "-XX:+UseG1GC",
+            "-XX:G1PeriodicGCInterval=60000",
+            "-XX:MinHeapFreeRatio=10",
+            "-XX:MaxHeapFreeRatio=30",
+            "-XX:+UseStringDeduplication",
+        )
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "CloudStream"

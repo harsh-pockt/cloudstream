@@ -11,6 +11,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
+import com.lagradost.cloudstream4.network.DesktopHttp
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.security.MessageDigest
@@ -65,7 +66,8 @@ class PluginDownloadException(message: String) : Exception(message)
  * GitHub address (seen on some ISPs) made every download time out.
  */
 class RepositoryClient(
-    private val http: OkHttpClient = OkHttpClient.Builder()
+    // The app's client, so repository lists come from its cache while GitHub says they are fresh
+    private val http: OkHttpClient = DesktopHttp.client.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build(),

@@ -35,6 +35,7 @@ import com.lagradost.cloudstream4.generated.resources.Res
 import com.lagradost.cloudstream4.generated.resources.app_name
 import com.lagradost.cloudstream4.generated.resources.default_icon
 import com.lagradost.cloudstream4.android.DesktopAndroid
+import com.lagradost.cloudstream4.network.DesktopHttp
 import com.lagradost.cloudstream4.plugins.DesktopPluginManager
 import com.lagradost.cloudstream4.settings.AppUpdatePrompt
 import com.lagradost.cloudstream4.settings.autoUpdateExtensions
@@ -58,6 +59,9 @@ fun main() {
     DesktopLog.install(AppDirs.logs)
     // Extensions and the library keep their data in the Android data store, see DataStoreWatchStore
     DesktopAndroid.init(AppDirs.root.resolve("android"))
+    // Before the extensions load: they make their requests through it
+    @OptIn(DelicateCoroutinesApi::class)
+    DesktopHttp.start(GlobalScope)
     // Plugins load in the background so a slow or broken plugin never delays the window
     @OptIn(DelicateCoroutinesApi::class)
     GlobalScope.launch(Dispatchers.IO) {

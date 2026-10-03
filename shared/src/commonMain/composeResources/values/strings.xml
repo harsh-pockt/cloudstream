@@ -130,4 +130,6 @@
     <string name="reset_btn">Reset</string>
     <string name="all_subtitles_bold">Make all subtitles bold</string>
     <string name="all_subtitles_italic">Make all subtitles italic</string>
+    <string name="dns_pref">DNS over HTTPS</string>
+    <string name="dns_pref_summary">Useful for bypassing ISP blocks</string>
 </resources>

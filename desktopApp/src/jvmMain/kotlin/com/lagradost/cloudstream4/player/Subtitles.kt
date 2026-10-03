@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream4.AppDirs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
+import com.lagradost.cloudstream4.network.DesktopHttp
 import okhttp3.Request
 import java.io.File
 import java.io.IOException
@@ -16,7 +16,7 @@ import java.security.MessageDigest
  * its own headers, which mpv could only send by changing the headers of the video too.
  */
 object Subtitles {
-    private val http = OkHttpClient()
+    private val http get() = DesktopHttp.client
     private val dir: File get() = AppDirs.cache.resolve("subtitles").toFile()
 
     suspend fun download(subtitle: SubtitleFile): File = withContext(Dispatchers.IO) {
