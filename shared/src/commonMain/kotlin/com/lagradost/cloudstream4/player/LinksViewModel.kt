@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -51,6 +52,8 @@ sealed interface LinksAction {
     /** The player could not play this link, so the next one is tried */
     data class Failed(val url: String, val reason: String) : LinksAction
     data object Retry : LinksAction
+    /** Stop finding links: the best found so far plays, and links still coming are left out */
+    data object Skip : LinksAction
     /** Pass the checks of [LinksState.checkSites], then look for links again */
     data object PassChecks : LinksAction
 }
@@ -91,7 +94,15 @@ class LinksViewModel(
 
             LinksAction.Retry -> load()
             LinksAction.PassChecks -> passChecks()
+            LinksAction.Skip -> skip()
         }
+    }
+
+    private fun skip() {
+        if (!state.value.loading || state.value.links.isEmpty()) return
+        loadJob?.cancel()
+        autoPicking = true
+        updateState { copy(loading = false, selected = selected ?: nextLink(links, failed)) }
     }
 
     private fun passChecks() {
@@ -142,7 +153,8 @@ class LinksViewModel(
             api.loadLinksSafely(
                 request.data,
                 onSubtitle = { sub -> updateState { if (subtitles.any { it.url == sub.url }) this else copy(subtitles = subtitles + sub) } },
-                onLink = ::addLink,
+                // An extractor can still call back after a skip, from its own thread
+                onLink = { if (isActive) addLink(it) },
             )
             picker.cancel()
             watcher?.cancel()

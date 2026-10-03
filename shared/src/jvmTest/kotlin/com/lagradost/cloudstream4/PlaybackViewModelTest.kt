@@ -276,6 +276,25 @@ class PlaybackViewModelTest {
     }
 
     @Test
+    fun skipPlaysTheBestFoundSoFarAndStopsFindingLinks() {
+        api.gate = CompletableDeferred()
+        api.slowAfter = 2
+        // A long wait before picking, so only the skip plays a link
+        val vm = links("sd" to 720, "hd" to 1080, "late" to 2160, autoPickMs = 60_000)
+        await(vm.state) { it.links.size == 2 }
+        assertNull(vm.state.value.selected)
+
+        vm.onAction(LinksAction.Skip)
+        val skipped = vm.state.value
+        assertEquals(false, skipped.loading)
+        assertEquals("hd", skipped.selectedLink?.name)
+        // The extractor still running is left out
+        api.gate!!.complete(Unit)
+        Thread.sleep(200)
+        assertEquals(listOf("hd", "sd"), vm.state.value.links.map { it.name })
+    }
+
+    @Test
     fun noLinksMeansExhausted() {
         val vm = links()
         val state = await(vm.state) { !it.loading }
