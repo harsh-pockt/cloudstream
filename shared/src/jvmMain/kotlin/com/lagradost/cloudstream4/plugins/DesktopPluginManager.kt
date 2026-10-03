@@ -48,6 +48,8 @@ data class InstalledPlugin(
     val convertedWith: Int = 0,
     /** From the repository, with %size% where the size goes like Android */
     val iconUrl: String? = null,
+    /** The file it was downloaded from. Android extensions check it, see PluginData.url */
+    val fileUrl: String? = null,
 )
 
 /** A newer version of an installed plugin in its repository */
@@ -100,7 +102,8 @@ class DesktopPluginManager(
     init {
         // Android plugins look themselves up in the Android app's plugin manager
         PluginManager.installed = {
-            _installed.value.map { PluginData(it.internalName, it.repositoryUrl, true, jarFile(it.internalName).toString(), it.version) }
+            // Like Android, the url is the file's: some extensions only register when it is from their own repository
+            _installed.value.map { PluginData(it.internalName, it.fileUrl ?: it.repositoryUrl, true, jarFile(it.internalName).toString(), it.version) }
         }
     }
 
@@ -157,7 +160,7 @@ class DesktopPluginManager(
                 val entry = InstalledPlugin(
                     plugin.internalName, plugin.name, plugin.version, repositoryUrl,
                     isAndroid = android, convertedWith = if (android) CONVERTER_VERSION else 0,
-                    iconUrl = plugin.iconUrl,
+                    iconUrl = plugin.iconUrl, fileUrl = if (android) plugin.androidUrl else plugin.jarUrl,
                 )
                 writeIndex(_installed.value.filterNot { it.internalName == plugin.internalName } + entry)
                 loadLocked(plugin.internalName)?.let { throw it }
@@ -256,6 +259,7 @@ class DesktopPluginManager(
                 isAndroid = obj["isAndroid"]?.jsonPrimitive?.boolean ?: false,
                 convertedWith = obj["convertedWith"]?.jsonPrimitive?.int ?: 0,
                 iconUrl = obj["iconUrl"]?.jsonPrimitive?.takeIf { it.isString }?.content,
+                fileUrl = obj["fileUrl"]?.jsonPrimitive?.takeIf { it.isString }?.content,
             )
         }
     }.getOrElse {
@@ -275,6 +279,7 @@ class DesktopPluginManager(
                     "isAndroid" to JsonPrimitive(it.isAndroid),
                     "convertedWith" to JsonPrimitive(it.convertedWith),
                     "iconUrl" to JsonPrimitive(it.iconUrl),
+                    "fileUrl" to JsonPrimitive(it.fileUrl),
                 )
             )
         })

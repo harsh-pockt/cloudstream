@@ -1,6 +1,7 @@
 package com.lagradost.cloudstream4.plugins
 
 import com.lagradost.cloudstream3.APIHolder
+import com.lagradost.cloudstream3.plugins.PluginManager
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayOutputStream
@@ -155,6 +156,8 @@ class PluginTest {
         manager.loadedPlugin("TestPlugin")!!.unload()
         val restarted = DesktopPluginManager(dir.resolve("plugins"), client)
         assertEquals(2, restarted.installed.value.single().version)
+        // Like Android, extensions see the file they came from, kept across restarts
+        assertEquals(listOf("${repoUrl.removeSuffix("repo.json")}TestPlugin.jar"), PluginManager.getPluginsOnline().map { it.url })
         restarted.loadAll()
         assertNotNull(restarted.loadedPlugin("TestPlugin"))
 
