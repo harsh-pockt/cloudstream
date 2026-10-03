@@ -1,0 +1,82 @@
+name: Release
+
+# Publishes the Windows app. Push a tag v<version>, where <version> is versionName in
+# gradle/libs.versions.toml; a tag with a suffix, such as v4.8.0-beta.1, makes a pre-release. The
+# release holds the installer and, as THIRD-PARTY-NOTICES.txt promises, the complete source of the
+# libmpv-2.dll inside it, copied from the libmpv release the build downloads it from.
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Check the tag matches the app's version
+      run: |
+        version=$(grep -E '^versionName' gradle/libs.versions.toml | cut -d'"' -f2)
+        tag=${GITHUB_REF_NAME#v}
+        if [[ "$tag" != "$version" && "$tag" != "$version-"* ]]; then
+          echo "::error::Tag $GITHUB_REF_NAME does not match versionName $version in gradle/libs.versions.toml"
+          exit 1
+        fi
+
+    # Before the build, so a release never goes out without the source it promises
+    - name: Get the source of the bundled libmpv
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        libmpv=$(grep -o 'releases/download/[^/"]*' desktopApp/build.gradle.kts | head -1 | cut -d/ -f3)
+        echo "libmpv comes from release $libmpv"
+        mkdir libmpv-source
+        gh release download "$libmpv" --repo "$GITHUB_REPOSITORY" --dir libmpv-source --pattern '*-source.7z.*' --pattern '*-sources.txt'
+        if ! ls libmpv-source/*-source.7z.001 > /dev/null 2>&1; then
+          echo "::error::Release $libmpv has no libmpv source. Build libmpv with the libmpv workflow (publish) and point desktopApp/build.gradle.kts at it"
+          exit 1
+        fi
+        ls -la libmpv-source
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: 17
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v5
+      with:
+        cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+        cache-read-only: true
+
+    - name: Run tests
+      run: ./gradlew :library:jvmTest :shared:jvmTest
+
+    - name: Build MSI
+      run: ./gradlew :desktopApp:packageMsi
+
+    - name: Publish
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        msi=$(ls desktopApp/build/compose/binaries/main/msi/*.msi)
+        prerelease=$([[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease || true)
+        {
+          echo "CloudStream for Windows ${GITHUB_REF_NAME#v}."
+          echo
+          echo "Download \`$(basename "$msi")\` and open it to install, or to update an installed version. Installed apps also find this release in Settings."
+          echo
+          echo "SHA-256 of the installer: \`$(sha256sum "$msi" | cut -d' ' -f1)\`"
+          echo
+          echo "The \`*-source.7z.*\` files are the complete source of the libmpv-2.dll the app plays video with (GPL, see THIRD-PARTY-NOTICES.txt), with the list of every library's version in \`*-sources.txt\`."
+        } > notes.md
+        gh release create "$GITHUB_REF_NAME" "$msi" libmpv-source/* --repo "$GITHUB_REPOSITORY" \
+          --title "CloudStream ${GITHUB_REF_NAME#v}" --notes-file notes.md $prerelease

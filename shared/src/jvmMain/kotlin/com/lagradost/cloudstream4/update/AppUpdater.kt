@@ -37,7 +37,7 @@ class AppUpdateException(message: String) : Exception(message)
  * MSI, which upgrades the installed app in place because every version shares one upgrade code.
  */
 class AppUpdater(
-    private val releasesUrl: String = LATEST_RELEASE,
+    private val releasesUrl: String = RELEASES,
     private val http: OkHttpClient = DesktopHttp.client.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -52,10 +52,9 @@ class AppUpdater(
     suspend fun latestRelease(): AppRelease? = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(releasesUrl).header("Accept", "application/vnd.github+json").build()
         http.newCall(request).execute().use { response ->
-            // GitHub answers 404 while the repository has no release
             if (response.code == 404) return@withContext null
             if (!response.isSuccessful) throw AppUpdateException("GitHub answered HTTP ${response.code}")
-            parseRelease(response.body.string())
+            newestRelease(response.body.string())
         }
     }
 
@@ -102,7 +101,21 @@ class AppUpdater(
 
     companion object {
         const val REPOSITORY = "harsh-pockt/cloudstream"
-        const val LATEST_RELEASE = "https://api.github.com/repos/$REPOSITORY/releases/latest"
+        /**
+         * Every release, newest first. Not releases/latest, which leaves out pre-releases, and the app is
+         * released as pre-releases for now
+         */
+        const val RELEASES = "https://api.github.com/repos/$REPOSITORY/releases?per_page=30"
+
+        /**
+         * The highest version among the app's releases: tagged v<version>, with an installer, not a
+         * draft. The repository's other releases, such as libmpv's, are left out
+         */
+        internal fun newestRelease(text: String): AppRelease? =
+            Json.parseToJsonElement(text).jsonArray.map { it.jsonObject }
+                .filter { (it["draft"] as? JsonPrimitive)?.content != "true" && it.string("tag_name")?.startsWith("v") == true }
+                .mapNotNull { parseRelease(it.toString()) }
+                .reduceOrNull { best, next -> if (AppVersion.isNewer(next.version, best.version)) next else best }
 
         internal fun parseRelease(text: String): AppRelease? {
             val obj = Json.parseToJsonElement(text).jsonObject
