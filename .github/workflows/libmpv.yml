@@ -144,6 +144,20 @@ jobs:
           git -C winbuild checkout --quiet "$WINBUILD_REF"
           git -C winbuild log -1 --format='%H %cI %s'
 
+      # A library that follows its main branch can move past what the others it is built with
+      # support. Each is held back here at a commit, as the scripts already do for OpenSSL:
+      # - curl 978cce12 (2 October 2026) needs ASN1_STRING_get_length, which the OpenSSL commit the
+      #   scripts pin does not have yet. Held at its parent
+      - name: Hold back libraries that no longer build
+        working-directory: winbuild
+        run: |
+          for pin in curl=318bd978ea2d36ace36b42da2174b79c3abd89a3; do
+            lib=${pin%%=*} commit=${pin#*=}
+            grep -q GIT_RESET packages/$lib.cmake && { echo "packages/$lib.cmake already holds a commit"; exit 1; }
+            sed -i "0,/GIT_REPOSITORY .*/s//&\n    GIT_REMOTE_NAME origin\n    GIT_RESET $commit/" packages/$lib.cmake
+            grep -nE 'GIT_(REPOSITORY|REMOTE_NAME|RESET)' packages/$lib.cmake
+          done
+
       - name: Restore the toolchain
         uses: actions/cache/restore@v6
         with:
