@@ -75,9 +75,10 @@ abstract class PrepareLibmpv : DefaultTask() {
 }
 
 val prepareLibmpv by tasks.registering(PrepareLibmpv::class) {
-    // shinchiro's 20261002 build, mirrored on the fork because shinchiro keeps only its last 30 builds
-    archiveUrl = "https://github.com/harsh-pockt/cloudstream/releases/download/libmpv-20261002/mpv-dev-x86_64-20261002-git-3186d369f9.7z"
-    archiveSha256 = "d873450cc1a7f881a8a10c33936d9555ad18a3809d827b9dbea55ba55caebcf9"
+    // Built by the libmpv workflow, which publishes the complete source next to it. The release workflow
+    // copies that source into each app release from the release named here, so keep this URL first
+    archiveUrl = "https://github.com/harsh-pockt/cloudstream/releases/download/libmpv-20261004-git-413ff0b1cd/mpv-dev-x86_64-20261004-git-413ff0b1cd.7z"
+    archiveSha256 = "356bec543ce3acd8811f10b11cddaaca9b6946226b9c8dc99e9542c61d37b672"
     // The archive uses the BCJ2 filter, which only 7-Zip itself unpacks. 7zr.exe is its small standalone version,
     // mirrored too: 7-zip.org replaces it with each new version
     sevenZipUrl = "https://github.com/harsh-pockt/cloudstream/releases/download/libmpv-20261002/7zr.exe"
