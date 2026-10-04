@@ -92,11 +92,17 @@ class AppUpdater(
 
     /**
      * Starts the installer and returns, the caller then quits so the installer can replace the app.
-     * /passive shows only a progress bar and keeps the folder the app is installed in.
+     * /passive shows only a progress bar and keeps the folder the app is installed in. The app is
+     * installed for all users, so the installer runs as administrator: [start] starts it so, and
+     * throws when the user does not allow it, which leaves the app as it was.
      */
-    fun startInstaller(installer: Path, appData: AppData = AppData.instance) {
+    fun startInstaller(
+        installer: Path,
+        appData: AppData = AppData.instance,
+        start: (List<String>) -> Unit = { ProcessBuilder(it).start() },
+    ) {
+        start(listOf("msiexec", "/i", installer.toAbsolutePath().toString(), "/passive"))
         appData.markUpdating()
-        ProcessBuilder("msiexec", "/i", installer.toAbsolutePath().toString(), "/passive").start()
     }
 
     companion object {
