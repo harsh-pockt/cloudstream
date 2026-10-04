@@ -19,7 +19,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -45,6 +44,7 @@ import coil3.serviceLoaderEnabled
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream4.AppDirs
+import com.lagradost.cloudstream4.theme.BlackButton
 import okio.Path.Companion.toOkioPath
 
 /**
@@ -165,7 +165,7 @@ fun MoreButton(loading: Boolean, horizontal: Boolean, onClick: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         if (loading) CircularProgressIndicator(Modifier.size(24.dp))
-        else OutlinedButton(onClick = onClick) { Text("More") }
+        else BlackButton(onClick = onClick) { Text("More") }
     }
 }
 

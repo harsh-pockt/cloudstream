@@ -98,15 +98,18 @@ internal fun darkScheme() = CloudStreamColorScheme(
 )
 
 
+/** AmoledMode in styles.xml: black, with iconGrayBackground left at primaryBlackBackground */
 internal fun amoledScheme() = darkScheme().copy(
     background = CloudStreamPalette.AmoledBlack,
-    surface = CloudStreamPalette.AmoledBlack,
+    surface = CloudStreamPalette.DarkBlackBg,
     surfaceVariant = CloudStreamPalette.AmoledBlack,
     surfaceContainer = CloudStreamPalette.AmoledBlack,
 )
 
+/** AmoledModeLight in styles.xml, the Android app's default */
 internal fun amoledLightScheme() = amoledScheme().copy(
     surfaceVariant = CloudStreamPalette.AmoledNearBlack,
+    surfaceContainer = CloudStreamPalette.AmoledNearBlack,
 )
 
 internal fun lightScheme() = CloudStreamColorScheme(
@@ -128,7 +131,8 @@ internal fun draculaScheme() = CloudStreamColorScheme(
     surface = CloudStreamPalette.DraculaIconGrayBg,
     surfaceContainer = CloudStreamPalette.DraculaBoxItemBg,
     onBackground = CloudStreamPalette.DraculaText,
-    onSurfaceVariant = CloudStreamPalette.DraculaGrayText,
+    // The Android theme keeps the standard grayTextColor
+    onSurfaceVariant = CloudStreamPalette.DarkGrayText,
     icon = CloudStreamPalette.DraculaIcon,
     primary = CloudStreamPalette.Primary,
     ongoing = CloudStreamPalette.Ongoing,
@@ -141,7 +145,8 @@ internal fun lavenderScheme() = CloudStreamColorScheme(
     surface = CloudStreamPalette.LavenderIconGrayBg,
     surfaceContainer = CloudStreamPalette.LavenderBoxItemBg,
     onBackground = CloudStreamPalette.LavenderText,
-    onSurfaceVariant = CloudStreamPalette.LavenderGrayText,
+    // The Android theme keeps the standard grayTextColor
+    onSurfaceVariant = CloudStreamPalette.DarkGrayText,
     icon = CloudStreamPalette.LavenderIcon,
     primary = CloudStreamPalette.Primary,
     ongoing = CloudStreamPalette.Ongoing,
@@ -154,7 +159,8 @@ internal fun silentBlueScheme() = CloudStreamColorScheme(
     surface = CloudStreamPalette.SilentBlueIconGrayBg,
     surfaceContainer = CloudStreamPalette.SilentBlueBoxItemBg,
     onBackground = CloudStreamPalette.SilentBlueText,
-    onSurfaceVariant = CloudStreamPalette.SilentBlueGrayText,
+    // The Android theme keeps the standard grayTextColor
+    onSurfaceVariant = CloudStreamPalette.DarkGrayText,
     icon = CloudStreamPalette.SilentBlueIcon,
     primary = CloudStreamPalette.Primary,
     ongoing = CloudStreamPalette.Ongoing,

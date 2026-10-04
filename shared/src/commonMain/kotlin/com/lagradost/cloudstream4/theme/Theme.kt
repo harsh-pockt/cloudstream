@@ -3,6 +3,7 @@ package com.lagradost.cloudstream4.theme
 import androidx.compose.animation.core.InfiniteTransition
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -73,29 +74,39 @@ fun modeToTheme(mode : CloudStreamThemeMode, primaryColor: CloudStreamPrimaryCol
     return color
 }
 
-private fun CloudStreamColorScheme.toMaterial3ColorScheme() = if (isLight) {
-    lightColorScheme(
+/**
+ * Every Material role comes from the theme's own colours, as in the Android app's styles.xml.
+ * A role left out would keep Material's purple baseline, which shows in chips, dialogs, outlines
+ * and tonal surfaces.
+ */
+private fun CloudStreamColorScheme.toMaterial3ColorScheme(): ColorScheme {
+    val base = if (isLight) lightColorScheme() else darkColorScheme()
+    return base.copy(
         primary = primary,
-        background = background,
-        surface = surface,
-        surfaceVariant = surfaceVariant,
-        surfaceContainer = surfaceContainer,
-        onBackground = onBackground,
-        onSurface = onBackground,
-        onSurfaceVariant = onSurfaceVariant,
         onPrimary = Color.White,
-    )
-} else {
-    darkColorScheme(
-        primary = primary,
+        primaryContainer = primary,
+        onPrimaryContainer = Color.White,
+        inversePrimary = primary,
+        secondary = primary,
+        onSecondary = Color.White,
+        tertiary = primary,
+        onTertiary = Color.White,
         background = background,
-        surface = surface,
-        surfaceVariant = surfaceVariant,
-        surfaceContainer = surfaceContainer,
         onBackground = onBackground,
+        surface = surface,
         onSurface = onBackground,
+        surfaceVariant = surfaceVariant,
         onSurfaceVariant = onSurfaceVariant,
-        onPrimary = Color.White,
+        surfaceTint = primary,
+        surfaceDim = background,
+        surfaceBright = surfaceVariant,
+        surfaceContainerLowest = background,
+        surfaceContainerLow = surface,
+        surfaceContainer = surfaceContainer,
+        surfaceContainerHigh = surfaceVariant,
+        surfaceContainerHighest = surfaceVariant,
+        outline = onSurfaceVariant,
+        outlineVariant = surfaceVariant,
     )
 }
 

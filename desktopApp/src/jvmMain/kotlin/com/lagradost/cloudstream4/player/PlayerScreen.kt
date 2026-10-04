@@ -23,9 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -87,6 +85,8 @@ import com.lagradost.cloudstream4.generated.resources.pause_24px
 import com.lagradost.cloudstream4.generated.resources.play_arrow_24px
 import com.lagradost.cloudstream4.library.DataStoreWatchStore
 import com.lagradost.cloudstream4.library.saveProgress
+import com.lagradost.cloudstream4.theme.BlackButton
+import com.lagradost.cloudstream4.theme.WhiteButton
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -459,8 +459,8 @@ private fun TorrentPrompt(onPlay: () -> Unit, onSkip: () -> Unit) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = onPlay, modifier = Modifier.fillMaxWidth()) { Text("Play torrent") }
-        OutlinedButton(onClick = onSkip, modifier = Modifier.fillMaxWidth()) { Text("Use another source") }
+        WhiteButton(onClick = onPlay, modifier = Modifier.fillMaxWidth()) { Text("Play torrent") }
+        BlackButton(onClick = onSkip, modifier = Modifier.fillMaxWidth()) { Text("Use another source") }
     }
 }
 
@@ -487,7 +487,7 @@ private fun CheckPrompt(sites: List<String>, checking: Boolean, onOpen: () -> Un
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = onOpen, enabled = !checking, modifier = Modifier.fillMaxWidth()) {
+        WhiteButton(onClick = onOpen, enabled = !checking, modifier = Modifier.fillMaxWidth()) {
             Text(if (checking) "Waiting for the check…" else "Open browser")
         }
     }

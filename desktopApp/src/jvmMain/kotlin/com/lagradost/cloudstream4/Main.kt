@@ -5,9 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -42,7 +40,9 @@ import com.lagradost.cloudstream4.settings.AppUpdatePrompt
 import com.lagradost.cloudstream4.settings.autoUpdateExtensions
 import com.lagradost.cloudstream4.settings.desktopPrimaryColor
 import com.lagradost.cloudstream4.settings.desktopThemeMode
+import com.lagradost.cloudstream4.theme.BlackButton
 import com.lagradost.cloudstream4.theme.CloudStreamTheme
+import com.lagradost.cloudstream4.theme.WhiteButton
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -152,8 +152,8 @@ private fun askToStartFresh(): Boolean {
                             modifier = Modifier.weight(1f),
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = ::exitApplication) { Text("Keep my data") }
-                            OutlinedButton(onClick = {
+                            WhiteButton(onClick = ::exitApplication) { Text("Keep my data") }
+                            BlackButton(onClick = {
                                 fresh = true
                                 exitApplication()
                             }) { Text("Start fresh") }

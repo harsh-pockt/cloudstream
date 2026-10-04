@@ -11,13 +11,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,6 +34,8 @@ import com.lagradost.cloudstream4.home.HomeAction
 import com.lagradost.cloudstream4.home.HomeState
 import com.lagradost.cloudstream4.home.HomeStatus
 import com.lagradost.cloudstream4.home.HomeViewModel
+import com.lagradost.cloudstream4.theme.BlackButton
+import com.lagradost.cloudstream4.theme.WhiteButton
 import org.jetbrains.compose.resources.painterResource
 
 /** The home page of one provider, picked from a menu at the top */
@@ -52,14 +52,14 @@ fun HomeScreen(viewModel: HomeViewModel, openExtensions: () -> Unit, openDetails
             HomeStatus.NoProviders -> Message(
                 "No extensions with a home page",
                 "Install an extension to browse it here. If you already have, check the extension languages and media types under Settings > Providers.",
-            ) { Button(onClick = openExtensions) { Text("Open Extensions") } }
+            ) { WhiteButton(onClick = openExtensions) { Text("Open Extensions") } }
 
             HomeStatus.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
 
             is HomeStatus.Failed -> Message("${state.selected} could not be loaded", status.message) {
-                Button(onClick = { viewModel.onAction(HomeAction.Reload) }) { Text("Try again") }
+                WhiteButton(onClick = { viewModel.onAction(HomeAction.Reload) }) { Text("Try again") }
             }
 
             HomeStatus.Done -> if (state.rows.isEmpty()) {
@@ -111,7 +111,7 @@ private fun TopBar(state: HomeState, onAction: (HomeAction) -> Unit) {
             }
         }
         Box(Modifier.weight(1f))
-        OutlinedButton(onClick = { onAction(HomeAction.Reload) }, enabled = state.status != HomeStatus.Loading) {
+        BlackButton(onClick = { onAction(HomeAction.Reload) }, enabled = state.status != HomeStatus.Loading) {
             Text("Reload")
         }
     }

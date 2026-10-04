@@ -19,7 +19,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -38,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream4.library.TitleHeader
 import com.lagradost.cloudstream4.library.WatchStore
 import com.lagradost.cloudstream4.library.WatchType
+import com.lagradost.cloudstream4.theme.AppFilterChip
 
 /** The titles the user put in a library list, one list at a time, most recently changed first */
 @OptIn(ExperimentalLayoutApi::class)
@@ -54,7 +54,7 @@ fun LibraryScreen(store: WatchStore, openDetails: (apiName: String, url: String)
         FlowRow(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             WatchType.lists.forEach { type ->
                 val count = bookmarks.count { it.status == type }
-                FilterChip(
+                AppFilterChip(
                     selected = type == selected,
                     onClick = { selected = type },
                     label = { Text(if (count > 0) "${type.label} · $count" else type.label) },

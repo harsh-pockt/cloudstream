@@ -17,17 +17,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,6 +57,9 @@ import com.lagradost.cloudstream4.generated.resources.arrow_back
 import com.lagradost.cloudstream4.generated.resources.play_arrow_24px
 import com.lagradost.cloudstream4.library.PlaybackPosition
 import com.lagradost.cloudstream4.library.WatchType
+import com.lagradost.cloudstream4.theme.AppFilterChip
+import com.lagradost.cloudstream4.theme.BlackButton
+import com.lagradost.cloudstream4.theme.WhiteButton
 import org.jetbrains.compose.resources.painterResource
 
 /** The details of a movie or series, with its episodes and similar titles */
@@ -79,7 +79,7 @@ fun DetailScreen(
         when (val status = state.status) {
             DetailStatus.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             is DetailStatus.Failed -> Message("Could not load this title", status.message) {
-                Button(onClick = { viewModel.onAction(DetailAction.Retry) }) { Text("Try again") }
+                WhiteButton(onClick = { viewModel.onAction(DetailAction.Retry) }) { Text("Try again") }
             }
 
             DetailStatus.Done -> Details(state, viewModel, onPlay, onOpen, downloads)
@@ -224,14 +224,14 @@ private fun Header(
                 val resume = state.resume
                 if (state.unsupported == null) when {
                     // Continue watching left off in an episode
-                    resume?.episode != null -> Button(onClick = { onResume(resume.episode!!) }) {
+                    resume?.episode != null -> WhiteButton(onClick = { onResume(resume.episode!!) }) {
                         Icon(painterResource(Res.drawable.play_arrow_24px), contentDescription = null)
                         val at = if (resume.positionMs > 0) " at ${formatTime(resume.positionMs)}" else ""
                         Text("${if (resume.positionMs > 0) "Resume" else "Play"} ${resume.label}$at", modifier = Modifier.padding(start = 8.dp))
                     }
 
                     state.movieData != null -> {
-                        Button(onClick = { onPlay(false) }) {
+                        WhiteButton(onClick = { onPlay(false) }) {
                             Icon(painterResource(Res.drawable.play_arrow_24px), contentDescription = null)
                             Text(resume?.let { "Resume at ${formatTime(it.positionMs)}" } ?: "Play", modifier = Modifier.padding(start = 8.dp))
                         }
@@ -251,7 +251,7 @@ private fun Choices(state: DetailState, onAction: (DetailAction) -> Unit) {
     Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (state.dubs.size > 1) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             state.dubs.forEach { dub ->
-                FilterChip(
+                AppFilterChip(
                     selected = dub == state.selectedDub,
                     onClick = { onAction(DetailAction.SelectDub(dub)) },
                     label = { Text(if (dub == DubStatus.None) "Default" else dub.name) },
@@ -260,7 +260,7 @@ private fun Choices(state: DetailState, onAction: (DetailAction) -> Unit) {
         }
         if (state.seasons.size > 1) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             state.seasons.forEachIndexed { index, season ->
-                FilterChip(
+                AppFilterChip(
                     selected = index == state.selectedSeason,
                     onClick = { onAction(DetailAction.SelectSeason(index)) },
                     label = { Text(season.label) },
@@ -275,7 +275,7 @@ private fun Choices(state: DetailState, onAction: (DetailAction) -> Unit) {
 private fun LibraryButton(current: WatchType, onSelect: (WatchType) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        OutlinedButton(onClick = { open = true }) {
+        BlackButton(onClick = { open = true }) {
             Text(if (current == WatchType.NONE) "Add to library" else current.label)
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {

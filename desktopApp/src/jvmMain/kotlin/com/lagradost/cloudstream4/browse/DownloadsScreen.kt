@@ -22,7 +22,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -53,6 +52,7 @@ import com.lagradost.cloudstream4.generated.resources.play_arrow_24px
 import com.lagradost.cloudstream4.library.DataStoreWatchStore
 import com.lagradost.cloudstream4.library.PlaybackTracking
 import com.lagradost.cloudstream4.library.TitleHeader
+import com.lagradost.cloudstream4.theme.BlackButton
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 import java.awt.Desktop
@@ -82,7 +82,7 @@ fun DownloadsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            OutlinedButton(onClick = { openFolder(folder) }) {
+            BlackButton(onClick = { openFolder(folder) }) {
                 Icon(painterResource(Res.drawable.folder_open_24px), contentDescription = null, modifier = Modifier.size(18.dp))
                 Text("Open folder", modifier = Modifier.padding(start = 8.dp))
             }
