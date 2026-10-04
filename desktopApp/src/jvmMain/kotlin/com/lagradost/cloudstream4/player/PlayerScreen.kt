@@ -234,9 +234,49 @@ fun PlayerScreen(
         }
     }
     val showBars = !fullscreen || barsShown
+    // The mouse wheel over the video works as swipes do in the Android player: on the right half it
+    // sets the volume, on the left half the brightness, each shown by a level on the other side
+    var level by remember { mutableStateOf<Level?>(null) }
+    var brightness by remember { mutableStateOf(100) }
+    val wheelRest = remember { doubleArrayOf(0.0) }
+    fun changeLevel(kind: LevelKind, delta: Int) {
+        // The level shown is newer than the status, which is read twice a second
+        val now = level?.takeIf { it.kind == kind }?.percent ?: if (kind == LevelKind.Volume) status.volume else brightness
+        val next = (now + delta).coerceIn(0, 100)
+        when (kind) {
+            LevelKind.Volume -> {
+                if (status.muted && delta > 0) player.toggleMute()
+                player.setVolume(next)
+            }
+            LevelKind.Brightness -> {
+                brightness = next
+                player.setBrightness(next)
+            }
+        }
+        level = Level(kind, next, System.nanoTime())
+    }
+    LaunchedEffect(level) {
+        val shown = level
+        if (shown == null) {
+            player.overlay(null, LEVEL_LAYER)
+            return@LaunchedEffect
+        }
+        player.overlay(levelAss(shown), LEVEL_LAYER)
+        delay(1500)
+        level = null
+    }
     LaunchedEffect(player) {
         player.events.collect { event ->
             when (event) {
+                // 5 % a notch of the wheel, and a touchpad's small turns add up to it
+                is MpvEvent.Wheel -> {
+                    wheelRest[0] += event.notches * 5
+                    val steps = wheelRest[0].toInt()
+                    if (steps != 0) {
+                        wheelRest[0] -= steps
+                        changeLevel(if (event.x >= 0.5f) LevelKind.Volume else LevelKind.Brightness, steps)
+                    }
+                }
                 MpvEvent.ToggleFullscreen -> currentFullscreen()
                 MpvEvent.Back -> currentBack()
                 MpvEvent.Click -> if (panel != null) panel = null else player.togglePause()
@@ -344,8 +384,8 @@ fun PlayerScreen(
             Key.Spacebar, Key.K -> player.togglePause()
             Key.DirectionLeft, Key.J -> player.seek(-10.0)
             Key.DirectionRight, Key.L -> player.seek(10.0)
-            Key.DirectionUp -> player.changeVolume(5)
-            Key.DirectionDown -> player.changeVolume(-5)
+            Key.DirectionUp -> changeLevel(LevelKind.Volume, 5)
+            Key.DirectionDown -> changeLevel(LevelKind.Volume, -5)
             // The app hides at once, and the video must not carry on behind it: the window handles M next
             Key.M -> {
                 player.pause()
@@ -602,6 +642,55 @@ private fun spinnerAss(step: Int, text: String): String {
         lines += "{\\an7\\pos(${x - 4.5},${y - 4.5})\\bord0\\shad0\\1c&HFFFFFF&\\1a&H%02X&\\p1}".format(alpha) + circle(4.5) + "{\\p0}"
     }
     lines += "{\\an8\\pos($cx,${cy + 70})\\fs24\\bord1.5\\shad0\\3c&H000000&\\1c&HFFFFFF&}" + text.replace("{", "(").replace("}", ")")
+    return lines.joinToString("\n")
+}
+
+private enum class LevelKind { Volume, Brightness }
+
+/** A level set with the wheel or the keys, [at] telling apart two changes to the same percent */
+private data class Level(val kind: LevelKind, val percent: Int, val at: Long)
+
+/** The overlay layer of the levels, above the spinner's */
+private const val LEVEL_LAYER = 2
+
+/**
+ * A level as the Android player shows it, drawn by mpv over the video: a thin bar filled from the
+ * bottom, an icon above and the percent below. The volume's on the left, the brightness's on the
+ * right, away from the hand that sets it.
+ */
+private fun levelAss(level: Level): String {
+    fun n(v: Double) = "%.1f".format(java.util.Locale.ROOT, v)
+    fun rect(w: Double, h: Double) = "m 0 0 l ${n(w)} 0 ${n(w)} ${n(h)} 0 ${n(h)}"
+    val volume = level.kind == LevelKind.Volume
+    val cx = if (volume) 110.0 else 1170.0
+    val top = 260.0
+    val height = 200.0
+    val width = 6.0
+    val edge = "\\bord1\\shad0\\3c&H000000&\\3a&H90&"
+    val lines = mutableListOf<String>()
+    // The track, then the level from the bottom up
+    lines += "{\\an7\\pos(${n(cx - width / 2)},${n(top)})$edge\\1c&HFFFFFF&\\1a&HB0&\\p1}${rect(width, height)}{\\p0}"
+    val filled = height * level.percent / 100
+    if (filled > 0) lines += "{\\an7\\pos(${n(cx - width / 2)},${n(top + height - filled)})\\bord0\\shad0\\1c&HFFFFFF&\\p1}${rect(width, filled)}{\\p0}"
+    // The icon, drawn on a 24 by 24 grid as Material's icons are
+    val icon = if (volume) {
+        // A speaker, with sound waves while there is any volume
+        "m 3 9 l 7 9 l 12 4 l 12 20 l 7 15 l 3 15" + if (level.percent > 0) {
+            " m 14 8.4 b 16.2 9.6 16.2 14.4 14 15.6 l 14.9 17.1 b 18.3 15.2 18.3 8.8 14.9 6.9" +
+                if (level.percent > 50) " m 16.4 4.6 b 21.4 7.6 21.4 16.4 16.4 19.4 l 17.3 20.9 b 23.4 17.2 23.4 6.8 17.3 3.1" else ""
+        } else ""
+    } else {
+        // A sun: a disc and eight rays
+        val rays = (0 until 8).joinToString(" ") { i ->
+            val angle = Math.toRadians(i * 45.0)
+            val x = 12 + 9 * kotlin.math.cos(angle)
+            val y = 12 + 9 * kotlin.math.sin(angle)
+            "m ${n(x - 1.3)} ${n(y - 1.3)} l ${n(x + 1.3)} ${n(y - 1.3)} ${n(x + 1.3)} ${n(y + 1.3)} ${n(x - 1.3)} ${n(y + 1.3)}"
+        }
+        "m 7.5 12 b 7.5 6 16.5 6 16.5 12 b 16.5 18 7.5 18 7.5 12 $rays"
+    }
+    lines += "{\\an7\\pos(${n(cx - 18)},${n(top - 48)})\\fscx150\\fscy150$edge\\1c&HFFFFFF&\\p1}$icon{\\p0}"
+    lines += "{\\an8\\pos(${n(cx)},${n(top + height + 12)})\\fs22\\bord1.5\\shad0\\3c&H000000&\\1c&HFFFFFF&}${level.percent}%"
     return lines.joinToString("\n")
 }
 

@@ -151,6 +151,11 @@ sealed interface MpvEvent {
     /** The mouse's back button inside the video */
     data object Back : MpvEvent
     data object Ended : MpvEvent
+    /**
+     * The mouse wheel or a touchpad turned over the video, at [x] across it from 0 to 1, by [notches]
+     * of a wheel, up positive
+     */
+    data class Wheel(val x: Float, val notches: Double) : MpvEvent
     /** The file could not be played, for example a refused or broken link */
     data class Failed(val url: String, val message: String) : MpvEvent
 }
@@ -223,8 +228,13 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
             }
 
             override fun mouseWheelMoved(e: MouseWheelEvent) {
-                // The wheel changes the volume, as in most desktop players
-                changeVolume(if (e.wheelRotation < 0) 5 else -5)
+                // Handled here: otherwise the window passes the same turn on to the video again, a few
+                // times over, and one notch would move the level several steps
+                e.consume()
+                // A touchpad sends many small turns, where the whole notches in wheelRotation are 0:
+                // only the precise rotation says how far, and which way
+                val notches = -e.preciseWheelRotation
+                if (notches != 0.0) _events.trySend(MpvEvent.Wheel((e.x.toFloat() / width.coerceAtLeast(1)).coerceIn(0f, 1f), notches))
             }
         }
         addMouseListener(mouse)
@@ -431,11 +441,18 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
 
     /**
      * Draws [ass] over the video, in ASS on a 1280 by 720 canvas, or removes it when null. The
-     * video is a native window, so this is the only way to show something on top of it.
+     * video is a native window, so this is the only way to show something on top of it. Each
+     * [layer] is drawn and removed on its own
      */
-    fun overlay(ass: String?) = whenStarted {
-        if (ass == null) command("osd-overlay", OVERLAY_ID, "none", "")
-        else command("osd-overlay", OVERLAY_ID, "ass-events", ass, "1280", "720")
+    fun overlay(ass: String?, layer: Int = 1) = whenStarted {
+        if (ass == null) command("osd-overlay", layer.toString(), "none", "")
+        else command("osd-overlay", layer.toString(), "ass-events", ass, "1280", "720")
+    }
+
+    /** The picture's brightness, from 0 for dark to 100 as the video is */
+    fun setBrightness(percent: Int) = whenStarted {
+        // mpv's -100 is black: the darkest step still shows the picture, like a screen at its lowest
+        command("set", "brightness", ((percent.coerceIn(0, 100) - 100) * 0.8).toInt().toString())
     }
 
     fun status(): MpvStatus {
@@ -478,7 +495,6 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
         const val MPV_EVENT_END_FILE = 7
         const val MPV_EVENT_FILE_LOADED = 8
         const val MPV_EVENT_PLAYBACK_RESTART = 21
-        const val OVERLAY_ID = "1"
         const val END_FILE_REASON_EOF = 0
         const val END_FILE_REASON_ERROR = 4
     }
