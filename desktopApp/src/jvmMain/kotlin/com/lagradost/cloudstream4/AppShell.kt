@@ -11,10 +11,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -251,10 +251,18 @@ fun AppShell(navigator: AppNavigator) {
                 // The mouse's back button goes back, as in a browser
                 .onPointerEvent(PointerEventType.Press) { if (it.button == PointerButton.Back) navigator.back() },
         ) {
+            // As the Android app's nav_rail_view: on primaryGrayBackground, the selected item in the
+            // primary colour (item_select_color.xml). Labels stay, there is room for them on a desktop
             if (!hideRail) NavigationRail(
                 modifier = Modifier.fillMaxHeight(),
-                containerColor = MaterialTheme.colorScheme.background,
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
             ) {
+                val itemColors = NavigationRailItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                    unselectedIconColor = MaterialTheme.colorScheme.onBackground,
+                    unselectedTextColor = MaterialTheme.colorScheme.onBackground,
+                )
                 Column(
                     modifier = Modifier.fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
@@ -271,11 +279,11 @@ fun AppShell(navigator: AppNavigator) {
                                 )
                             },
                             label = { Text(stringResource(destination.title)) },
+                            colors = itemColors,
                         )
                     }
                 }
             }
-            if (!hideRail) VerticalDivider()
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 if (page != null) {
                     CompositionLocalProvider(LocalViewModelStoreOwner provides page) {

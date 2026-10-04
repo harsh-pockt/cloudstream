@@ -6,10 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +26,9 @@ import com.lagradost.cloudstream4.AppDirs
 import com.lagradost.cloudstream4.AppVersion
 import com.lagradost.cloudstream4.desktopPreferences
 import com.lagradost.cloudstream4.generated.resources.*
+import com.lagradost.cloudstream4.theme.AppShapes
+import com.lagradost.cloudstream4.theme.BlackButton
+import com.lagradost.cloudstream4.theme.WhiteButton
 import com.lagradost.cloudstream4.update.AppRelease
 import com.lagradost.cloudstream4.update.AppUpdater
 import com.mihon.presentation.settings.Preference
@@ -82,8 +83,8 @@ private fun UpdateActions(release: AppRelease, state: UpdateState, onLater: (() 
         }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         if (state.progress == null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { scope.launch { state.install(release) } }) { Text("Update now") }
-            OutlinedButton(onClick = { runCatching { uriHandler.openUri(release.pageUrl) } }) { Text("What's new") }
+            WhiteButton(onClick = { scope.launch { state.install(release) } }) { Text("Update now") }
+            BlackButton(onClick = { runCatching { uriHandler.openUri(release.pageUrl) } }) { Text("What's new") }
             onLater?.let { TextButton(onClick = it) { Text("Later") } }
         }
     }
@@ -102,6 +103,9 @@ fun AppUpdatePrompt() {
     }
     val current = release ?: return
     AlertDialog(
+        // dialog__window_background.xml
+        containerColor = MaterialTheme.colorScheme.background,
+        shape = AppShapes.dialog,
         onDismissRequest = { if (state.progress == null) release = null },
         title = { Text("CloudStream ${current.version} is available") },
         text = {
@@ -156,7 +160,7 @@ object SettingsUpdatesScreen : SearchableSettings {
                                     modifier = Modifier.weight(1f),
                                 )
                                 if ((check as? Check.Done)?.release == null) {
-                                    OutlinedButton(enabled = check != Check.Checking, onClick = ::checkNow) { Text("Check now") }
+                                    BlackButton(enabled = check != Check.Checking, onClick = ::checkNow) { Text("Check now") }
                                 }
                             }
                             (check as? Check.Done)?.release?.let { UpdateActions(it, state) }
@@ -194,6 +198,9 @@ object SettingsStorageScreen : SearchableSettings {
 
         confirm?.let { reset ->
             AlertDialog(
+                // dialog__window_background.xml
+                containerColor = MaterialTheme.colorScheme.background,
+                shape = AppShapes.dialog,
                 onDismissRequest = { confirm = null },
                 title = { Text("${reset.title}?") },
                 text = {
@@ -206,12 +213,12 @@ object SettingsStorageScreen : SearchableSettings {
                     )
                 },
                 confirmButton = {
-                    Button(onClick = {
+                    WhiteButton(onClick = {
                         AppData.instance.scheduleReset(reset)
                         restartApp()
                     }) { Text(reset.title) }
                 },
-                dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
+                dismissButton = { BlackButton(onClick = { confirm = null }) { Text("Cancel") } },
             )
         }
 

@@ -44,7 +44,8 @@ internal object CloudStreamPalette {
 
     // Amoled
     val AmoledBlack = Color(0xFF000000)
-    val AmoledNearBlack = Color(0xFF121212)
+    /** amoledModeLight in colors.xml */
+    val AmoledNearBlack = Color(0xFF121213)
 
     // Light
     val LightPrimaryGrayBg = Color(0xFFF1F1F1)
@@ -61,7 +62,6 @@ internal object CloudStreamPalette {
     val DraculaIconGrayBg = Color(0xFF44475A)
     val DraculaBoxItemBg = Color(0xFF373844)
     val DraculaText = Color(0xFFF8F8F2)
-    val DraculaGrayText = Color(0xFF6272A4)
     val DraculaIcon = Color(0xFF6272A4)
 
     // Lavender Dreams
@@ -70,7 +70,6 @@ internal object CloudStreamPalette {
     val LavenderIconGrayBg = Color(0xFFB794F6)
     val LavenderBoxItemBg = Color(0xFFF8F5FF)
     val LavenderText = Color(0xFF2D1B47)
-    val LavenderGrayText = Color(0xFF9AB3FF)
     val LavenderIcon = Color(0xFF7C3AED)
 
     // Silent Blue
@@ -79,6 +78,5 @@ internal object CloudStreamPalette {
     val SilentBlueIconGrayBg = Color(0xFF3A446A)
     val SilentBlueBoxItemBg = Color(0xFF3A446A)
     val SilentBlueText = Color(0xFFE0E1F3)
-    val SilentBlueGrayText = Color(0xFF7B83B0)
     val SilentBlueIcon = Color(0xFF7B83B0)
 }

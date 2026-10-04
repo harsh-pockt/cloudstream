@@ -6,10 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -36,6 +34,8 @@ import com.lagradost.cloudstream4.plugins.PluginUpdate
 import com.lagradost.cloudstream4.plugins.RepoPlugin
 import com.lagradost.cloudstream4.plugins.Repository
 import com.lagradost.cloudstream4.plugins.RepositoryClient
+import com.lagradost.cloudstream4.theme.BlackButton
+import com.lagradost.cloudstream4.theme.WhiteButton
 import com.mihon.common.preference.minusAssign
 import com.mihon.common.preference.plusAssign
 import com.mihon.presentation.settings.Preference
@@ -257,7 +257,7 @@ object AddRepositoryScreen : SearchableSettings {
                         label = { Text("Repository URL or short code, for example megarepo") },
                     )
                     BusyOr(adding) {
-                        Button(
+                        WhiteButton(
                             enabled = text.isNotBlank(),
                             onClick = {
                                 val input = text
@@ -353,7 +353,7 @@ object InstalledExtensionsScreen : SearchableSettings {
                         )
                         BusyOr(current is Check.Checking || busy["all"] == true, label = "Updating".takeIf { busy["all"] == true }) {
                             if (updates.isNotEmpty()) {
-                                Button(onClick = {
+                                WhiteButton(onClick = {
                                     busy["all"] = true
                                     scope.launch {
                                         val failed = manager.installUpdates(updates)
@@ -362,7 +362,7 @@ object InstalledExtensionsScreen : SearchableSettings {
                                     }
                                 }) { Text("Update all") }
                             } else {
-                                OutlinedButton(enabled = installed.isNotEmpty(), onClick = ::checkForUpdates) { Text("Check now") }
+                                BlackButton(enabled = installed.isNotEmpty(), onClick = ::checkForUpdates) { Text("Check now") }
                             }
                         }
                     }
@@ -404,8 +404,8 @@ object InstalledExtensionsScreen : SearchableSettings {
                             }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (update != null) Button(onClick = { run { manager.install(plugin.repositoryUrl, update.available) } }) { Text("Update") }
-                            OutlinedButton(onClick = { run { manager.uninstall(plugin.internalName) } }) { Text("Uninstall") }
+                            if (update != null) WhiteButton(onClick = { run { manager.install(plugin.repositoryUrl, update.available) } }) { Text("Update") }
+                            BlackButton(onClick = { run { manager.uninstall(plugin.internalName) } }) { Text("Uninstall") }
                         }
                     }
                 },
@@ -500,15 +500,15 @@ class RepositoryScreen(private val url: String) : SearchableSettings {
                                     }
                                 }
                                 when {
-                                    installedVersion == null -> Button(onClick = {
+                                    installedVersion == null -> WhiteButton(onClick = {
                                         run { manager.install(url, plugin) }
                                     }) { Text("Install") }
 
-                                    installedVersion < plugin.version -> Button(onClick = {
+                                    installedVersion < plugin.version -> WhiteButton(onClick = {
                                         run { manager.install(url, plugin) }
                                     }) { Text("Update") }
 
-                                    else -> OutlinedButton(onClick = {
+                                    else -> BlackButton(onClick = {
                                         run { manager.uninstall(plugin.internalName) }
                                     }) { Text("Uninstall") }
                                 }
@@ -564,7 +564,7 @@ private fun megaRepoGroup(scope: CoroutineScope): Preference.PreferenceGroup {
             Preference.PreferenceItem.CustomPreference("Add all community repositories") {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     BusyOr(adding) {
-                        Button(onClick = {
+                        WhiteButton(onClick = {
                             adding = true
                             scope.launch {
                                 result = runCatching { "Added ${addCommunityRepositories()} community repositories" }

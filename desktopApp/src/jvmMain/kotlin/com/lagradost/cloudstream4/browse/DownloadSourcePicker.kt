@@ -16,7 +16,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -36,6 +35,8 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream4.download.DownloadSource
 import com.lagradost.cloudstream4.download.Downloads
 import com.lagradost.cloudstream4.providers.loadLinksSafely
+import com.lagradost.cloudstream4.theme.AppShapes
+import com.lagradost.cloudstream4.theme.BlackButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -76,6 +77,9 @@ fun DownloadSourcePicker(
     val links by found.collectAsState()
 
     AlertDialog(
+        // dialog__window_background.xml
+        containerColor = MaterialTheme.colorScheme.background,
+        shape = AppShapes.dialog,
         onDismissRequest = onDismiss,
         title = { Text("Download from") },
         text = {
@@ -108,7 +112,7 @@ fun DownloadSourcePicker(
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { BlackButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 

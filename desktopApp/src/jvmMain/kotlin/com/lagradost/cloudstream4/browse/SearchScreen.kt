@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -42,6 +41,7 @@ import com.lagradost.cloudstream4.search.ProviderStatus
 import com.lagradost.cloudstream4.search.SearchAction
 import com.lagradost.cloudstream4.search.SearchHistoryEntry
 import com.lagradost.cloudstream4.search.SearchViewModel
+import com.lagradost.cloudstream4.theme.WhiteButton
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -90,7 +90,7 @@ fun SearchScreen(viewModel: SearchViewModel, openExtensions: () -> Unit, openDet
             state.noProviders -> Message(
                 "No extensions to search with",
                 "Install an extension, or check the extension languages and media types under Settings > Providers.",
-            ) { Button(onClick = openExtensions) { Text("Open Extensions") } }
+            ) { WhiteButton(onClick = openExtensions) { Text("Open Extensions") } }
 
             state.searchedQuery.isEmpty() && state.history.isNotEmpty() -> SearchHistory(
                 entries = state.history,
