@@ -107,6 +107,19 @@ class AppDataTest {
     }
 
     @Test
+    fun aPreReleaseComesBeforeItsVersion() {
+        // The installed beta.1 says 4.8.0: offering beta.1 again would install it over and over
+        assertFalse(AppVersion.isNewer("4.8.0-beta.1", "4.8.0"))
+        assertTrue(AppVersion.isNewer("4.8.0", "4.8.0-beta.1"))
+        assertFalse(AppVersion.isNewer("4.8.0-beta.1", "4.8.0-beta.1"))
+        assertTrue(AppVersion.isNewer("v4.8.0-beta.2", "4.8.0-beta.1"))
+        assertTrue(AppVersion.isNewer("4.8.0-beta.10", "4.8.0-beta.9"))
+        assertTrue(AppVersion.isNewer("4.8.0-rc.1", "4.8.0-beta.3"))
+        assertTrue(AppVersion.isNewer("4.8.1-beta.1", "4.8.0"))
+        assertFalse(AppVersion.isNewer("4.8.0-beta", "4.8.0-beta.1"))
+    }
+
+    @Test
     fun releaseIsReadFromGitHub() {
         val release = AppUpdater.parseRelease(
             """{"tag_name":"v4.9.0","html_url":"https://github.com/r/releases/tag/v4.9.0","body":"Notes",
