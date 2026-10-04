@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import com.lagradost.cloudstream4.AppData
 import com.lagradost.cloudstream4.AppDirs
 import com.lagradost.cloudstream4.AppVersion
+import com.lagradost.cloudstream4.ElevationDeclinedException
+import com.lagradost.cloudstream4.WindowsElevated
 import com.lagradost.cloudstream4.desktopPreferences
 import com.lagradost.cloudstream4.generated.resources.*
 import com.lagradost.cloudstream4.theme.AppShapes
@@ -33,7 +35,9 @@ import com.lagradost.cloudstream4.update.AppRelease
 import com.lagradost.cloudstream4.update.AppUpdater
 import com.mihon.presentation.settings.Preference
 import com.mihon.presentation.settings.SearchableSettings
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.painterResource
 import java.nio.file.Path
 import kotlin.system.exitProcess
@@ -62,9 +66,13 @@ private class UpdateState {
         progress = 0f
         try {
             val installer = updater.download(release, Path.of(System.getProperty("java.io.tmpdir"), "CloudStream-update")) { progress = it }
-            updater.startInstaller(installer)
+            // Windows asks for permission while the app is still in front, where its prompt is seen
+            withContext(Dispatchers.IO) { updater.startInstaller(installer, start = WindowsElevated::start) }
             // The installer replaces the app's files, which it can only do once the app has quit
             exitProcess(0)
+        } catch (_: ElevationDeclinedException) {
+            error = "Not updated: Windows needs your permission to install the update"
+            progress = null
         } catch (t: Throwable) {
             error = "Could not update: ${t.message ?: t}"
             progress = null
