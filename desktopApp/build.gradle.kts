@@ -154,3 +154,38 @@ compose.desktop {
         //}
     }
 }
+
+/**
+ * The MSI built from createDistributable's app folder, for the release workflow when it signs: the
+ * CloudStream.exe in that folder is signed before it goes into the installer, while Compose's own
+ * packageMsi builds the app again from scratch. Same installer settings as compose.desktop above, and
+ * the WiX Toolset Compose downloads.
+ */
+val packageMsiFromAppImage by tasks.registering(Exec::class) {
+    group = "compose desktop"
+    description = "Packages the app folder of createDistributable, run first, into an MSI"
+    dependsOn(rootProject.tasks.named("unzipWix"))
+    // Read here as plain values: the configuration cache cannot keep Compose's settings objects
+    val distributions = compose.desktop.application.nativeDistributions
+    val name = distributions.packageName!!
+    val version = distributions.packageVersion!!
+    val windows = distributions.windows
+    val options = buildList {
+        add("--win-upgrade-uuid"); add(windows.upgradeUuid!!)
+        if (windows.menu) { add("--win-menu"); add("--win-menu-group"); add(windows.menuGroup!!) }
+        if (windows.shortcut) add("--win-shortcut")
+        if (windows.dirChooser) add("--win-dir-chooser")
+    }
+    val appImage = layout.buildDirectory.dir("compose/binaries/main/app/$name")
+    val dest = layout.buildDirectory.dir("compose/binaries/main-from-app/msi")
+    val wix = rootProject.layout.buildDirectory.dir("wix311")
+    val jpackage = File(System.getProperty("java.home"), "bin/jpackage").path
+    doFirst {
+        dest.get().asFile.deleteRecursively()
+        executable = jpackage
+        environment("PATH", wix.get().asFile.path + File.pathSeparator + System.getenv("PATH"))
+        args("--type", "msi", "--app-image", appImage.get().asFile.path, "--dest", dest.get().asFile.path)
+        args("--name", name, "--app-version", version)
+        args(options)
+    }
+}

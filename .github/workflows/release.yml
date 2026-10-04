@@ -11,6 +11,17 @@ name: Release
 #
 # The release holds the installer and, as THIRD-PARTY-NOTICES.txt promises, the complete source of the
 # libmpv-2.dll inside it, copied from the libmpv release the build downloads it from.
+#
+# Signing, with Azure Artifact Signing: CloudStream.exe is signed, the installer is built around it and
+# signed too. It signs once these repository variables are set (Settings > Secrets and variables >
+# Actions > Variables), and releases are unsigned until then:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID      the app registration GitHub signs in as, through OpenID
+#                                          Connect, so no password or secret is kept here. Its federated
+#                                          credential is for the environment "release"
+#   ARTIFACT_SIGNING_ENDPOINT             the signing account's region endpoint,
+#                                          such as https://eus.codesigning.azure.net/
+#   ARTIFACT_SIGNING_ACCOUNT              the signing account's name
+#   ARTIFACT_SIGNING_PROFILE              its certificate profile's name
 
 on:
   push:
@@ -23,6 +34,8 @@ on:
 
 permissions:
   contents: write
+  # Signing in to Azure with OpenID Connect
+  id-token: write
 
 # One release at a time, so two merges close together never pick the same beta number
 concurrency:
@@ -32,6 +45,8 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
+    # Azure trusts this repository's "release" environment to sign, whether a merge or a tag runs it
+    environment: release
     defaults:
       run:
         shell: bash
@@ -96,18 +111,74 @@ jobs:
     # The app knows its full version, pre-release included, for the update check. The MSI version
     # takes the run number as its last part: Windows only upgrades to a higher MSI version, and two
     # releases of one version, such as 4.8.0-beta.1 and 4.8.0-beta.2, must still upgrade
-    - name: Build MSI
+    - name: Choose the build's versions
       run: |
         version=${TAG#v}
         core=${version%%-*}
-        ./gradlew :desktopApp:packageMsi -PappVersion=$version -PmsiVersion=${core%.*}.$GITHUB_RUN_NUMBER
+        echo "VERSIONS=-PappVersion=$version -PmsiVersion=${core%.*}.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+    - name: Build MSI
+      if: vars.ARTIFACT_SIGNING_ACCOUNT == ''
+      run: ./gradlew :desktopApp:packageMsi $VERSIONS
+
+    # Signed: the app is built first, its CloudStream.exe signed, and then the installer built around it
+    - name: Build the app
+      if: vars.ARTIFACT_SIGNING_ACCOUNT != ''
+      run: ./gradlew :desktopApp:createDistributable $VERSIONS
+
+    - name: Sign in to Azure
+      if: vars.ARTIFACT_SIGNING_ACCOUNT != ''
+      uses: azure/login@v2
+      with:
+        client-id: ${{ vars.AZURE_CLIENT_ID }}
+        tenant-id: ${{ vars.AZURE_TENANT_ID }}
+        allow-no-subscriptions: true
+
+    - name: Sign CloudStream.exe
+      if: vars.ARTIFACT_SIGNING_ACCOUNT != ''
+      uses: azure/artifact-signing-action@v2
+      with:
+        endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+        signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+        certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        files: ${{ github.workspace }}\desktopApp\build\compose\binaries\main\app\CloudStream\CloudStream.exe
+        description: CloudStream
+        description-url: ${{ github.server_url }}/${{ github.repository }}
+
+    - name: Build MSI from the signed app
+      if: vars.ARTIFACT_SIGNING_ACCOUNT != ''
+      run: ./gradlew :desktopApp:packageMsiFromAppImage $VERSIONS
+
+    - name: Sign MSI
+      if: vars.ARTIFACT_SIGNING_ACCOUNT != ''
+      uses: azure/artifact-signing-action@v2
+      with:
+        endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+        signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+        certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        files-folder: ${{ github.workspace }}\desktopApp\build\compose\binaries\main-from-app\msi
+        files-folder-filter: msi
+        description: CloudStream
+        description-url: ${{ github.server_url }}/${{ github.repository }}
+
+    - name: Check the signatures
+      if: vars.ARTIFACT_SIGNING_ACCOUNT != ''
+      shell: pwsh
+      run: |
+        $files = @(Get-Item desktopApp\build\compose\binaries\main\app\CloudStream\CloudStream.exe) + @(Get-ChildItem desktopApp\build\compose\binaries\main-from-app\msi\*.msi)
+        foreach ($file in $files) {
+          $signature = Get-AuthenticodeSignature $file.FullName
+          "$($file.Name): $($signature.Status), $($signature.SignerCertificate.Subject)"
+          if ($signature.Status -ne 'Valid') { throw "$($file.Name) is not signed: $($signature.StatusMessage)" }
+        }
 
     # Creates the tag on the merged commit when there is none yet
     - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        msi=$(ls desktopApp/build/compose/binaries/main/msi/*.msi)
+        # The signed installer is built from the app folder, see above
+        msi=$(ls desktopApp/build/compose/binaries/main-from-app/msi/*.msi 2> /dev/null || ls desktopApp/build/compose/binaries/main/msi/*.msi)
         prerelease=$([[ "$TAG" == *-* ]] && echo --prerelease || true)
         {
           echo "CloudStream for Windows ${TAG#v}."
