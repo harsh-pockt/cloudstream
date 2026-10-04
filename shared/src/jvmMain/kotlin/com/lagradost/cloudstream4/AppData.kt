@@ -150,16 +150,48 @@ object AppVersion {
     val current: String =
         System.getProperty("cloudstream.version") ?: System.getProperty("jpackage.app-version") ?: "0.0.0"
 
-    /** Compares dotted versions such as 4.10.0 and 4.9.2 number by number. A leading "v" is ignored */
-    fun isNewer(candidate: String, than: String): Boolean {
-        fun parts(v: String) = v.trim().removePrefix("v").split('.', '-').map { it.toIntOrNull() ?: 0 }
-        val a = parts(candidate)
-        val b = parts(than)
-        for (i in 0 until maxOf(a.size, b.size)) {
-            val x = a.getOrElse(i) { 0 }
-            val y = b.getOrElse(i) { 0 }
-            if (x != y) return x > y
+    /**
+     * Compares versions such as 4.10.0 and 4.9.2 number by number. A leading "v" is ignored. As in
+     * semantic versioning, a pre-release such as 4.8.0-beta.2 comes before 4.8.0 and after 4.8.0-beta.1
+     */
+    fun isNewer(candidate: String, than: String): Boolean = compare(candidate, than) > 0
+
+    private fun compare(a: String, b: String): Int {
+        fun split(v: String) = v.trim().removePrefix("v").split('-', limit = 2).let { it[0] to it.getOrNull(1) }
+        val (coreA, preA) = split(a)
+        val (coreB, preB) = split(b)
+        val numbersA = coreA.split('.').map { it.toIntOrNull() ?: 0 }
+        val numbersB = coreB.split('.').map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(numbersA.size, numbersB.size)) {
+            val x = numbersA.getOrElse(i) { 0 }
+            val y = numbersB.getOrElse(i) { 0 }
+            if (x != y) return x.compareTo(y)
         }
-        return false
+        return when {
+            preA == preB -> 0
+            preA == null -> 1
+            preB == null -> -1
+            else -> comparePreRelease(preA, preB)
+        }
+    }
+
+    /** beta.2 after beta.1, beta.10 after beta.9, rc after beta */
+    private fun comparePreRelease(a: String, b: String): Int {
+        val partsA = a.split('.')
+        val partsB = b.split('.')
+        for (i in 0 until maxOf(partsA.size, partsB.size)) {
+            val x = partsA.getOrNull(i) ?: return -1
+            val y = partsB.getOrNull(i) ?: return 1
+            val nx = x.toIntOrNull()
+            val ny = y.toIntOrNull()
+            val result = when {
+                nx != null && ny != null -> nx.compareTo(ny)
+                nx != null -> -1
+                ny != null -> 1
+                else -> x.compareTo(y)
+            }
+            if (result != 0) return result
+        }
+        return 0
     }
 }

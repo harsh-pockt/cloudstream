@@ -102,8 +102,9 @@ tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(as
 compose.desktop {
     application {
         mainClass = "com.lagradost.cloudstream4.MainKt"
-        // Read by AppVersion, for the update check
-        jvmArgs("-Dcloudstream.version=${libs.versions.versionName.get()}")
+        // Read by AppVersion, for the update check. The release workflow passes the tag's version, which
+        // can be a pre-release such as 4.8.0-beta.2
+        jvmArgs("-Dcloudstream.version=${providers.gradleProperty("appVersion").getOrElse(libs.versions.versionName.get())}")
         // Memory. Without a limit the heap may grow to a quarter of the computer's RAM before it is
         // collected, while the app uses well under 100 MB of it. When idle, the heap shrinks and the
         // memory goes back to Windows. Strings repeated across extensions' results are kept once
@@ -120,8 +121,10 @@ compose.desktop {
             packageName = "CloudStream"
             // Holds libmpv-2.dll and the notices, found at runtime through the compose.application.resources.dir property
             appResourcesRootDir = layout.buildDirectory.dir("app-resources")
-            // MSI requires MAJOR.MINOR.BUILD with numbers only, which versionName already is
-            packageVersion = libs.versions.versionName.get()
+            // MSI requires MAJOR.MINOR.BUILD with numbers only, and only replaces an installed copy with a
+            // higher one: two betas of 4.8.0 would both be 4.8.0. So the release workflow passes
+            // MAJOR.MINOR.<its run number>, which grows with every release
+            packageVersion = providers.gradleProperty("msiVersion").getOrElse(libs.versions.versionName.get())
 
             // The packaged runtime only contains these JDK modules, regenerate with ./gradlew :desktopApp:suggestRuntimeModules
             // jdk.zipfs is used when converting Android extensions, which suggestRuntimeModules does not see
