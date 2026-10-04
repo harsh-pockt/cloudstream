@@ -46,6 +46,7 @@ import com.lagradost.cloudstream4.theme.WhiteButton
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
@@ -176,6 +177,12 @@ private fun FullscreenEffect(navigator: AppNavigator, windowState: WindowState, 
     LaunchedEffect(navigator.fullscreen) {
         if (WindowsFullscreen.supported) {
             if (navigator.fullscreen) WindowsFullscreen.enter(window) else WindowsFullscreen.exit(window)
+            // The frame comes and goes without the window's size changing when it was maximized, so
+            // nothing lays it out again: the content kept the frame's place, and the video moved apart
+            // from the bars drawn around it. Once Windows has taken the frame away or put it back
+            var waited = 0
+            while ((window.insets.top == 0) != navigator.fullscreen && waited++ < 20) delay(25)
+            window.revalidate()
         } else if (navigator.fullscreen) {
             before = windowState.placement
             windowState.placement = WindowPlacement.Fullscreen

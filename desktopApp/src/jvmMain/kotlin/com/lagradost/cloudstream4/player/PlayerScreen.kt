@@ -66,6 +66,9 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.platform.LocalDensity
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream4.browse.Message
@@ -362,14 +365,10 @@ fun PlayerScreen(
     }
     // Clicks on the bars outside their buttons close an open panel
     val closePanel = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { panel = null }
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            // Moves over the bars, which the video does not see
-            .onPointerEvent(PointerEventType.Move) { pointerMoved() },
-    ) {
-        if (showBars) TopBar(
+    // Moves over the bars, which the video does not see
+    val barMoves = Modifier.onPointerEvent(PointerEventType.Move) { pointerMoved() }
+    val topBar: @Composable (Modifier) -> Unit = { modifier ->
+        TopBar(
             title = listOfNotNull(viewModel.request.title, viewModel.request.episodeLabel).joinToString(" · "),
             line = subtitleMessage ?: when {
                 state.exhausted && state.checkSites.isNotEmpty() ->
@@ -386,44 +385,11 @@ fun PlayerScreen(
             onRetry = if (state.exhausted) ({ viewModel.onAction(LinksAction.Retry) }) else null,
             // Some extensions keep finding links for minutes: what is found so far can be enough
             onSkip = if (state.loading && state.links.isNotEmpty()) ({ viewModel.onAction(LinksAction.Skip) }) else null,
-            modifier = closePanel,
+            modifier = modifier.then(closePanel).then(barMoves),
         )
-        // The video is a native window, so nothing can be drawn over it: panels open beside it
-        Row(Modifier.fillMaxWidth().weight(1f)) {
-            SwingPanel(factory = { player.canvas }, modifier = Modifier.weight(1f).fillMaxHeight(), background = Color.Black)
-            if (state.exhausted && state.checkSites.isNotEmpty()) CheckPrompt(
-                sites = state.checkSites,
-                checking = state.checking,
-                onOpen = { viewModel.onAction(LinksAction.PassChecks) },
-            )
-            if (askTorrent) TorrentPrompt(
-                onPlay = {
-                    TorrServer.accepted = true
-                    torrentAccepted = true
-                },
-                onSkip = { selected?.let { viewModel.onAction(LinksAction.Failed(it.url, "Torrent not played")) } },
-            )
-            val open = panel
-            if (open != null && showBars) SidePanel(
-                panel = open,
-                state = state,
-                status = status,
-                downloaded = downloaded,
-                loadingSubtitle = loadingSubtitle,
-                onSelect = { viewModel.onAction(LinksAction.Select(it)) },
-                onSubtitle = ::showSubtitle,
-                onSubtitleTrack = { id ->
-                    subtitleChoice = if (id == null) SubtitleChoice.Off else SubtitleChoice.Default
-                    player.selectSubtitle(id)
-                },
-                onSubDelay = { if (it == 0.0) player.resetSubDelay() else player.changeSubDelay(it) },
-                textSize = subtitleStyle.textSize,
-                onTextSize = { size -> subtitleSettings.setStyle(subtitleSettings.style.value.copy(fixedTextSize = size)) },
-                onAudioTrack = player::selectAudio,
-                onSpeed = player::setSpeed,
-            )
-        }
-        if (showBars) ControlBar(
+    }
+    val controlBar: @Composable (Modifier) -> Unit = { modifier ->
+        ControlBar(
             player = player,
             status = status,
             state = state,
@@ -432,8 +398,89 @@ fun PlayerScreen(
             fullscreen = fullscreen,
             onPanel = { panel = it },
             onToggleFullscreen = onToggleFullscreen,
-            modifier = closePanel,
+            modifier = modifier.then(closePanel).then(barMoves),
         )
+    }
+    // The picture keeps its size and place whatever opens around it. In a window the bars sit above and
+    // below the video and stay. In full screen the video fills the screen, and the bars that come and
+    // go cover its edges, as do the panels in both. The video is a native window that nothing can be
+    // drawn over, so it gives way to them, and mpv keeps the picture where it was: see keepPicture
+    var area by remember { mutableStateOf(IntSize.Zero) }
+    var topBarHeight by remember { mutableStateOf(0) }
+    var controlBarHeight by remember { mutableStateOf(0) }
+    var sideWidth by remember { mutableStateOf(0) }
+    val overlaid = fullscreen && showBars
+    val open = panel?.takeIf { showBars }
+    val prompt = state.exhausted && state.checkSites.isNotEmpty()
+    val side = open != null || prompt || askTorrent
+    val visible = IntRect(
+        left = 0,
+        top = if (overlaid) topBarHeight else 0,
+        right = area.width - if (side) sideWidth else 0,
+        bottom = area.height - if (overlaid) controlBarHeight else 0,
+    )
+    LaunchedEffect(area, visible, status.videoWidth, status.videoHeight) {
+        player.keepPicture(area, visible, status.videoWidth, status.videoHeight)
+    }
+    val density = LocalDensity.current
+    fun Int.dp() = with(density) { toDp() }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .then(barMoves),
+    ) {
+        if (!fullscreen) topBar(Modifier)
+        Box(Modifier.fillMaxWidth().weight(1f).onSizeChanged { area = it }) {
+            SwingPanel(
+                factory = { player.canvas },
+                modifier = Modifier
+                    .padding(top = visible.top.dp(), end = (area.width - visible.right).dp(), bottom = (area.height - visible.bottom).dp())
+                    .fillMaxSize(),
+                background = Color.Black,
+            )
+            if (overlaid) topBar(Modifier.align(Alignment.TopCenter).onSizeChanged { topBarHeight = it.height })
+            if (overlaid) controlBar(Modifier.align(Alignment.BottomCenter).onSizeChanged { controlBarHeight = it.height })
+            if (side) Row(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = visible.top.dp(), bottom = (area.height - visible.bottom).dp())
+                    .fillMaxHeight()
+                    .onSizeChanged { sideWidth = it.width },
+            ) {
+                if (prompt) CheckPrompt(
+                    sites = state.checkSites,
+                    checking = state.checking,
+                    onOpen = { viewModel.onAction(LinksAction.PassChecks) },
+                )
+                if (askTorrent) TorrentPrompt(
+                    onPlay = {
+                        TorrServer.accepted = true
+                        torrentAccepted = true
+                    },
+                    onSkip = { selected?.let { viewModel.onAction(LinksAction.Failed(it.url, "Torrent not played")) } },
+                )
+                if (open != null) SidePanel(
+                    panel = open,
+                    state = state,
+                    status = status,
+                    downloaded = downloaded,
+                    loadingSubtitle = loadingSubtitle,
+                    onSelect = { viewModel.onAction(LinksAction.Select(it)) },
+                    onSubtitle = ::showSubtitle,
+                    onSubtitleTrack = { id ->
+                        subtitleChoice = if (id == null) SubtitleChoice.Off else SubtitleChoice.Default
+                        player.selectSubtitle(id)
+                    },
+                    onSubDelay = { if (it == 0.0) player.resetSubDelay() else player.changeSubDelay(it) },
+                    textSize = subtitleStyle.textSize,
+                    onTextSize = { size -> subtitleSettings.setStyle(subtitleSettings.style.value.copy(fixedTextSize = size)) },
+                    onAudioTrack = player::selectAudio,
+                    onSpeed = player::setSpeed,
+                )
+            }
+        }
+        if (!fullscreen) controlBar(Modifier)
     }
 }
 
