@@ -1,5 +1,8 @@
 package com.lagradost.cloudstream4.player
 
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.sun.jna.Library
@@ -17,6 +20,7 @@ import java.awt.event.MouseWheelEvent
 import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CountDownLatch
+import kotlin.math.ln
 
 /** The libmpv functions the player uses, see mpv/client.h */
 @Suppress("FunctionName")
@@ -131,6 +135,9 @@ data class MpvStatus(
     val speed: Double = 1.0,
     /** Seconds the subtitles are shown later, negative for earlier */
     val subDelay: Double = 0.0,
+    /** The video's size as shown, its aspect ratio applied, 0 before it is known */
+    val videoWidth: Int = 0,
+    val videoHeight: Int = 0,
 )
 
 /** A subtitle file to show with a link, added again whenever the link changes */
@@ -384,6 +391,32 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
 
     fun setSpeed(speed: Double) = whenStarted { command("set", "speed", speed.toString()) }
 
+    /**
+     * Keeps the picture where it would be in [full] while only [visible], a part of it, shows the
+     * video: what the app puts beside the video then covers the picture's edge instead of shrinking it.
+     * Both in pixels, [visible] relative to [full]. The video's size is needed, from [status].
+     */
+    fun keepPicture(full: IntSize, visible: IntRect, videoWidth: Int, videoHeight: Int) = whenStarted {
+        if (videoWidth <= 0 || videoHeight <= 0 || visible.width <= 0 || visible.height <= 0 ||
+            full.width <= 0 || full.height <= 0 || visible == IntRect(IntOffset.Zero, full)
+        ) {
+            command("set", "video-zoom", "0")
+            command("set", "video-pan-x", "0")
+            command("set", "video-pan-y", "0")
+            return@whenStarted
+        }
+        // The scale mpv would fit the video to in each, and the zoom from the visible part's to the full one's
+        val fullScale = minOf(full.width.toDouble() / videoWidth, full.height.toDouble() / videoHeight)
+        val visibleScale = minOf(visible.width.toDouble() / videoWidth, visible.height.toDouble() / videoHeight)
+        // The pan moves the centre of the visible part back to the centre of the full area, in parts
+        // of the scaled video's size
+        val dx = full.width / 2.0 - visible.center.x
+        val dy = full.height / 2.0 - visible.center.y
+        command("set", "video-zoom", (ln(fullScale / visibleScale) / ln(2.0)).toString())
+        command("set", "video-pan-x", (dx / (videoWidth * fullScale)).toString())
+        command("set", "video-pan-y", (dy / (videoHeight * fullScale)).toString())
+    }
+
     /** How subtitles look, from SubtitleStyle.mpvOptions. The one shown changes at once */
     fun setSubtitleStyle(options: List<Pair<String, String>>) = whenStarted {
         options.forEach { (name, value) -> command("set", name, value) }
@@ -435,6 +468,8 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
             muted = property("mute") == "yes",
             speed = property("speed")?.toDoubleOrNull() ?: 1.0,
             subDelay = property("sub-delay")?.toDoubleOrNull() ?: 0.0,
+            videoWidth = property("dwidth")?.toIntOrNull() ?: 0,
+            videoHeight = property("dheight")?.toIntOrNull() ?: 0,
         )
     }
 
