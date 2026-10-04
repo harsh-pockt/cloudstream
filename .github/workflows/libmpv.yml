@@ -1,0 +1,320 @@
+name: libmpv
+
+# Builds libmpv-2.dll for the Windows app with shinchiro's mpv-winbuild-cmake, and keeps the complete
+# source it was built from. libmpv includes GPL parts (FFmpeg, x264 and others), so every app release
+# must come with that source. The build scripts follow each library's main branch and record nothing,
+# so the commits are written down here, after the build, from the source folders themselves.
+#
+# It builds with Clang, as shinchiro's published builds are: their GCC build has not passed since
+# April 2026. The LLVM toolchain takes hours, so it is built in a job of its own and kept in the
+# cache; it is rebuilt only when the build scripts change or the cache has expired.
+#
+# Run it by hand with "publish" to make a release holding the build, its source and the list of
+# versions; desktopApp/build.gradle.kts then points at that release. A pull request that changes this
+# file runs it without publishing, to check it still builds.
+
+on:
+  workflow_dispatch:
+    inputs:
+      winbuild_ref:
+        description: shinchiro/mpv-winbuild-cmake commit with the build scripts
+        default: 05a60b3cfd04e3e3b89918f4a27f3dde2935dff2
+      publish:
+        description: Publish the build and its source as a release of this repository
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/libmpv.yml
+
+permissions:
+  contents: read
+
+env:
+  WINBUILD_REF: ${{ inputs.winbuild_ref || '05a60b3cfd04e3e3b89918f4a27f3dde2935dff2' }}
+  TOOLCHAIN_CACHE: clang-toolchain-v1-${{ inputs.winbuild_ref || '05a60b3cfd04e3e3b89918f4a27f3dde2935dff2' }}
+
+jobs:
+  toolchain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    # shinchiro's build image, with the tools the scripts expect
+    container:
+      image: ghcr.io/shinchiro/archlinux:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Look for a toolchain built earlier
+        id: cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            winbuild/clang_root
+            winbuild/build
+          key: ${{ env.TOOLCHAIN_CACHE }}-${{ github.run_id }}
+          restore-keys: ${{ env.TOOLCHAIN_CACHE }}-
+          lookup-only: true
+
+      - name: Check out the build scripts
+        if: steps.cache.outputs.cache-matched-key == ''
+        run: |
+          git config --global --add safe.directory '*'
+          # The scripts apply their patches with git am, which needs a committer
+          git config --global user.name "github-actions"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git clone https://github.com/shinchiro/mpv-winbuild-cmake.git winbuild
+          git -C winbuild checkout --quiet "$WINBUILD_REF"
+
+      # As shinchiro's llvm_clang.yml, without the profile-guided second pass: that makes the
+      # compiler faster, it does not change what the compiler builds
+      - name: Build LLVM, Clang and the MinGW runtime
+        if: steps.cache.outputs.cache-matched-key == ''
+        working-directory: winbuild
+        run: |
+          cmake -DTARGET_ARCH=x86_64-w64-mingw32 -DCOMPILER_TOOLCHAIN=clang -DCMAKE_INSTALL_PREFIX=$PWD/clang_root \
+            -DMINGW_INSTALL_PREFIX=$PWD/build/x86_64-w64-mingw32 -DSINGLE_SOURCE_LOCATION=$PWD/src_packages \
+            -DRUSTUP_LOCATION=$PWD/clang_root/install_rustup -G Ninja -B build -S .
+          ninja -C build llvm
+          ninja -C build rustup
+          ninja -C build cargo-clean
+          ninja -C build llvm-clang
+          rm -rf build/toolchain build/packages
+
+      # The runtime libraries built here (libc++, compiler-rt, the MinGW CRT, winpthreads) end up in
+      # libmpv-2.dll, so their source is kept with the toolchain, with the commits it was built from
+      - name: Keep the toolchain's source
+        if: steps.cache.outputs.cache-matched-key == ''
+        working-directory: winbuild
+        run: |
+          for dir in src_packages/*/; do
+            lib=$(basename "$dir")
+            # Configuring makes an empty folder for every library, built here or not
+            [[ -z "$(ls -A "$dir")" ]] && continue
+            if git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 && [[ "$(git -C "$dir" rev-parse --show-toplevel)" == "$(cd "$dir" && pwd)" ]]; then
+              base=$(git -C "$dir" merge-base HEAD '@{u}' 2> /dev/null || git -C "$dir" rev-parse HEAD)
+              printf '%-24s %s %s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$base"
+            else
+              printf '%-24s from an archive, in the source as it was unpacked\n' "$lib"
+            fi
+          done > clang_root/toolchain-sources.txt
+          cat clang_root/toolchain-sources.txt
+          7z a -t7z -mx=7 -mmt=on -xr'!.git' clang_root/toolchain-source.7z src_packages
+          ls -la clang_root/toolchain-source.7z
+
+      - name: Collect the logs
+        if: failure()
+        run: find winbuild/build -type f -name '*-*.log' -print0 | tar -czf toolchain-logs.tar.gz --null -T - || true
+
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: toolchain-logs
+          path: toolchain-logs.tar.gz
+          retention-days: 3
+
+      - name: Save the toolchain for later runs
+        if: steps.cache.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            winbuild/clang_root
+            winbuild/build
+          key: ${{ env.TOOLCHAIN_CACHE }}-${{ github.run_id }}
+
+  build:
+    needs: toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/shinchiro/archlinux:latest
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      name: ${{ steps.package.outputs.name }}
+    steps:
+      - name: Check out the build scripts
+        run: |
+          git config --global --add safe.directory '*'
+          git config --global user.name "github-actions"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git clone https://github.com/shinchiro/mpv-winbuild-cmake.git winbuild
+          git -C winbuild checkout --quiet "$WINBUILD_REF"
+          git -C winbuild log -1 --format='%H %cI %s'
+
+      # A library that follows its main branch can move past what the others it is built with
+      # support. Each is held back here at a commit, as the scripts already do for OpenSSL:
+      # - curl 978cce12 (2 October 2026) needs ASN1_STRING_get_length, which the OpenSSL commit the
+      #   scripts pin does not have yet. Held at its parent
+      - name: Hold back libraries that no longer build
+        working-directory: winbuild
+        run: |
+          for pin in curl=318bd978ea2d36ace36b42da2174b79c3abd89a3; do
+            lib=${pin%%=*} commit=${pin#*=}
+            grep -q GIT_RESET packages/$lib.cmake && { echo "packages/$lib.cmake already holds a commit"; exit 1; }
+            sed -i "0,/GIT_REPOSITORY .*/s//&\n    GIT_REMOTE_NAME origin\n    GIT_RESET $commit/" packages/$lib.cmake
+            grep -nE 'GIT_(REPOSITORY|REMOTE_NAME|RESET)' packages/$lib.cmake
+          done
+
+      - name: Restore the toolchain
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            winbuild/clang_root
+            winbuild/build
+          key: ${{ env.TOOLCHAIN_CACHE }}-${{ github.run_id }}
+          restore-keys: ${{ env.TOOLCHAIN_CACHE }}-
+          fail-on-cache-miss: true
+
+      # The compiler's cache from the last run: a library that has not changed since is not compiled
+      # again. Most help when a run is repeated after a failure
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: winbuild/build/x86_64-w64-mingw32/ccache
+          key: libmpv-ccache-${{ github.run_id }}
+          restore-keys: libmpv-ccache-
+
+      # As shinchiro's mpv_clang.yml, with room in the compiler cache for every library
+      - name: Configure and download the sources
+        working-directory: winbuild
+        run: |
+          cmake -DTARGET_ARCH=x86_64-w64-mingw32 -DCOMPILER_TOOLCHAIN=clang -DCMAKE_INSTALL_PREFIX=$PWD/clang_root \
+            -DMINGW_INSTALL_PREFIX=$PWD/build/x86_64-w64-mingw32 -DSINGLE_SOURCE_LOCATION=$PWD/src_packages \
+            -DRUSTUP_LOCATION=$PWD/clang_root/install_rustup -DENABLE_CCACHE=ON -DCCACHE_MAXSIZE=2G -DCLANG_PACKAGES_LTO=ON \
+            -G Ninja --fresh -B build -S .
+          ninja -C build download || true
+
+      - name: Build mpv
+        working-directory: winbuild
+        run: ninja -C build mpv
+
+      - name: Save the compiler cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v6
+        with:
+          path: winbuild/build/x86_64-w64-mingw32/ccache
+          key: libmpv-ccache-${{ github.run_id }}
+
+      - name: Package libmpv
+        id: package
+        working-directory: winbuild
+        run: |
+          ninja -C build mpv-packaging
+          mkdir -p ../out
+          mv build/mpv-dev-x86_64-*.7z ../out/
+          name=$(basename ../out/mpv-dev-x86_64-*.7z .7z)
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          (cd ../out && sha256sum "$name.7z" > "$name.7z.sha256")
+
+      # After the build, each source folder holds the commit it was built from: the scripts update a
+      # library just before building it, and once built, reset it to that commit without their
+      # patches, which are in packages/. Configuring makes an empty folder for every library, which
+      # is skipped. The toolchain may come from an earlier run, so its commits are those that run
+      # wrote down; the libraries it built are those with a commit there
+      - name: Write down every version
+        working-directory: winbuild
+        run: |
+          name=${{ steps.package.outputs.name }}
+          awk '$2 ~ /^https?:/' clang_root/toolchain-sources.txt > ../toolchain-sources.txt
+          toolchain=" $(cut -d' ' -f1 ../toolchain-sources.txt | tr '\n' ' ') "
+          {
+            echo "# Sources of $name.7z"
+            echo "# Built $(date -u +%Y-%m-%dT%H:%MZ) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "# Build scripts: https://github.com/shinchiro/mpv-winbuild-cmake $(git rev-parse HEAD)"
+            echo "# Container: $(grep ^PRETTY_NAME /etc/os-release | cut -d= -f2) (ghcr.io/shinchiro/archlinux)"
+            echo
+            echo "# Toolchain, its source is in clang_root/toolchain-source.7z"
+            cat ../toolchain-sources.txt
+            echo
+            echo "# Libraries"
+            for dir in src_packages/*/; do
+              lib=$(basename "$dir")
+              [[ "$toolchain" == *" $lib "* || -z "$(ls -A "$dir")" ]] && continue
+              if git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 && [[ "$(git -C "$dir" rev-parse --show-toplevel)" == "$(cd "$dir" && pwd)" ]]; then
+                base=$(git -C "$dir" merge-base HEAD '@{u}' 2> /dev/null || git -C "$dir" rev-parse HEAD)
+                printf '%-24s %s %s\n' "$lib" "$(git -C "$dir" remote get-url origin)" "$base"
+              else
+                printf '%-24s from an archive, in the source as it was unpacked\n' "$lib"
+              fi
+            done
+          } > ../out/$name-sources.txt
+          cat ../out/$name-sources.txt
+
+      # Every library's source, the toolchain's source, the build scripts with their patches, and the
+      # Rust crates the Rust libraries were built with. Git history is left out, the commits are in the
+      # list above. The toolchain folders downloaded in this run are left out too: the toolchain was
+      # built from those in toolchain-source.7z. Split into parts below GitHub's 2 GB limit per file
+      - name: Pack the complete source
+        working-directory: winbuild
+        run: |
+          name=${{ steps.package.outputs.name }}
+          # The build tree is done with, and the runner's disk is small
+          rm -rf build/packages
+          # Links into the build tree, such as compile_commands.json, now point at nothing
+          find src_packages -xtype l -print -delete
+          df -h .
+          exclude=()
+          for lib in $(cut -d' ' -f1 ../toolchain-sources.txt); do exclude+=("-x!src_packages/$lib"); done
+          # The Rust crates are in the registry, and in git checkouts only when one comes from git
+          paths=()
+          for path in clang_root/install_rustup/.cargo/registry/src clang_root/install_rustup/.cargo/git/checkouts; do
+            [[ -d $path ]] && paths+=("$path")
+          done
+          7z a -t7z -mx=7 -mmt=on -v1900m -xr'!.git' "${exclude[@]}" ../out/$name-source.7z \
+            src_packages CMakeLists.txt README.md cargo_config.in ccache_conf.in exec.in meson_cross.txt.in toolchain.cmake.in \
+            cmake packages scripts toolchain clang_root/toolchain-source.7z "${paths[@]}" \
+            ../out/$name-sources.txt
+          ls -la ../out
+          (cd ../out && sha256sum $name-source.7z.* > $name-source.7z.sha256)
+
+      - name: Collect the logs
+        if: failure()
+        run: find winbuild/build -type f \( -name '*-*.log' -o -path '*/ffbuild/config.log' \) -print0 | tar -czf build-logs.tar.gz --null -T - || true
+
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs
+          path: build-logs.tar.gz
+          retention-days: 3
+
+      - name: Keep the build
+        uses: actions/upload-artifact@v7
+        with:
+          name: libmpv
+          path: out/
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: libmpv
+          path: out
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ needs.build.outputs.name }}
+        run: |
+          tag="libmpv-${NAME#mpv-dev-x86_64-}"
+          {
+            echo "libmpv for the Windows app, built with Clang from shinchiro/mpv-winbuild-cmake by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+            echo
+            echo "- \`$NAME.7z\`: libmpv-2.dll and its headers, which the app's build downloads"
+            echo "- \`$NAME-source.7z.*\`: the complete source it was built from (a multi-part 7z, open the .001 part)"
+            echo "- \`$NAME-sources.txt\`: every library with the commit it was built from"
+            echo
+            echo "libmpv-2.dll includes GPL parts, so it is distributed under the GNU GPL version 2 or later."
+          } > notes.md
+          gh release create "$tag" out/* --repo "$GITHUB_REPOSITORY" --title "libmpv ${NAME#mpv-dev-x86_64-}" --notes-file notes.md --prerelease
