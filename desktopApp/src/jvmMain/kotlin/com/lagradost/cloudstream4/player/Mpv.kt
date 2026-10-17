@@ -364,6 +364,11 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
                         resumeAt?.let(::checkResumed)
                     }
                     MPV_EVENT_FILE_LOADED -> synchronized(this) {
+                        // Whether a seek can work is known from here: a server that cannot be seeked shows in the log
+                        println(
+                            "INFO MpvPlayer: opened ${property("file-format")}, ${property("file-size")} bytes, " +
+                                "seekable: ${property("seekable")}, partly: ${property("partially-seekable")}",
+                        )
                         fileLoaded = true
                         afterLoad.forEach { it() }
                         afterLoad.clear()
@@ -412,6 +417,7 @@ class MpvPlayer internal constructor(private val lib: MpvLibrary) {
         val referer = link.referer.ifBlank { headerReferer.orEmpty() }
 
         currentUrl = link.url
+        println("INFO MpvPlayer: playing ${link.url} (headers: ${link.headers.keys.joinToString().ifEmpty { "none" }})")
         command("set", "user-agent", userAgent)
         command("set", "referrer", referer)
         // Appended one by one, so a comma inside a header value is never taken as a separator
