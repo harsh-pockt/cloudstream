@@ -35,6 +35,7 @@ import com.lagradost.cloudstream4.generated.resources.default_icon
 import com.lagradost.cloudstream4.android.DesktopAndroid
 import com.lagradost.cloudstream4.browser.SystemBrowser
 import com.lagradost.cloudstream4.network.DesktopHttp
+import com.lagradost.cloudstream4.platform.WindowSystem
 import com.lagradost.cloudstream4.plugins.DesktopPluginManager
 import com.lagradost.cloudstream4.settings.AppUpdatePrompt
 import com.lagradost.cloudstream4.settings.autoUpdateExtensions
@@ -66,7 +67,7 @@ fun main() {
     DesktopHttp.start(GlobalScope)
     // Edge or Chrome, without a window, stands in for Android's WebView, for extensions behind Cloudflare and the like.
     // It only shows a window when the user asks to pass a site's check, and lets that window come in front of the app
-    SystemBrowser.install()?.onShow = WindowsForeground::allow
+    SystemBrowser.install()?.onShow = WindowSystem.current::allowForeground
     // Plugins load in the background so a slow or broken plugin never delays the window
     @OptIn(DelicateCoroutinesApi::class)
     GlobalScope.launch(Dispatchers.IO) {
@@ -88,7 +89,7 @@ fun main() {
         var appWindow by remember { mutableStateOf<java.awt.Window?>(null) }
         val quit = {
             // So the window's normal size is saved, not the whole screen
-            appWindow?.let(WindowsFullscreen::exit)
+            appWindow?.let { WindowSystem.current.setFullscreen(it, false) }
             savedWindow.save(windowState)
             exitApplication()
         }
@@ -96,7 +97,7 @@ fun main() {
         Window(
             onCloseRequest = quit,
             state = windowState,
-            visible = WindowsHide.supported || !navigator.hidden,
+            visible = WindowSystem.current.hasHide || !navigator.hidden,
             title = stringResource(Res.string.app_name),
             icon = icon,
             onPreviewKeyEvent = navigator::onKeyEvent,
@@ -106,9 +107,7 @@ fun main() {
             MainContent(navigator, window)
             FullscreenEffect(navigator, windowState, window)
             LaunchedEffect(navigator.hidden) {
-                if (WindowsHide.supported) {
-                    if (navigator.hidden) WindowsHide.hide(window) else WindowsHide.show(window)
-                }
+                if (WindowSystem.current.hasHide) WindowSystem.current.setHidden(window, navigator.hidden)
                 if (navigator.hidden) return@LaunchedEffect
                 window.toFront()
                 // A window shown again doesn't hand the keys back to its content by itself, and the
@@ -169,18 +168,19 @@ private fun askToStartFresh(): Boolean {
 }
 
 /**
- * Puts the window in full screen while the player asks for it, then back to how it was. On
- * Windows without the title bar, elsewhere with Compose's own full screen.
+ * Puts the window in full screen while the player asks for it, then back to how it was. The
+ * system's own way where it has one, see [WindowSystem.hasFullscreen], otherwise Compose's.
  */
 @Composable
 private fun FullscreenEffect(navigator: AppNavigator, windowState: WindowState, window: java.awt.Window) {
     var before by remember { mutableStateOf(windowState.placement) }
     LaunchedEffect(navigator.fullscreen) {
-        if (WindowsFullscreen.supported) {
-            if (navigator.fullscreen) WindowsFullscreen.enter(window) else WindowsFullscreen.exit(window)
+        val system = WindowSystem.current
+        if (system.hasFullscreen) {
+            system.setFullscreen(window, navigator.fullscreen)
             // The frame comes and goes without the window's size changing when it was maximized, so
             // nothing lays it out again: the content kept the frame's place, and the video moved apart
-            // from the bars drawn around it. Once Windows has taken the frame away or put it back
+            // from the bars drawn around it. Once the system has taken the frame away or put it back
             var waited = 0
             while ((window.insets.top == 0) != navigator.fullscreen && waited++ < 20) delay(25)
             window.revalidate()
@@ -219,5 +219,5 @@ private fun MainContent(navigator: AppNavigator, window: java.awt.Window) {
 private fun ThemedFrame(window: java.awt.Window) {
     val background = MaterialTheme.colorScheme.background
     val text = MaterialTheme.colorScheme.onBackground
-    LaunchedEffect(window, background, text) { WindowsTitleBar.paint(window, background, text) }
+    LaunchedEffect(window, background, text) { WindowSystem.current.paintFrame(window, background, text) }
 }
